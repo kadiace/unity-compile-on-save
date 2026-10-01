@@ -1,0 +1,49 @@
+{
+  "name": "unity-compile-on-save",
+  "displayName": "Unity Compile on Save",
+  "description": "Recompile Unity scripts on C# save. Requires Unity CLI 1.0.0-beta.11 or later.",
+  "version": "0.0.2",
+  "engines": {
+    "vscode": "^1.138.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "Unity Compile on Save",
+      "properties": {
+        "unityCompileOnSave.compileUnityOnSave": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "description": "Run `unity recompile` when a C# file in a Unity project is saved."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.138.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "typescript-eslint": "^8.61.1",
+    "eslint": "^10.5.0",
+    "typescript": "^6.0.3",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  }
+}
