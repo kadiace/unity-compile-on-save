@@ -1,8 +1,10 @@
 {
   "name": "unity-compile-on-save",
   "displayName": "Unity Compile on Save",
-  "description": "Recompile Unity scripts on C# save. Requires Unity CLI 1.0.0-beta.11 or later.",
-  "version": "0.0.2",
+  "description": "Recompile Unity scripts after VS Code saves or Git changes. Wait for the Editor and coalesce changes per project. Requires Unity CLI 1.0.0-beta.11+.",
+  "publisher": "kadiace",
+  "license": "MIT",
+  "version": "0.0.6",
   "engines": {
     "vscode": "^1.138.0"
   },
@@ -15,11 +17,41 @@
     "configuration": {
       "title": "Unity Compile on Save",
       "properties": {
-        "unityCompileOnSave.compileUnityOnSave": {
+        "unityCompileOnSave.recompileOnSave": {
           "type": "boolean",
           "default": true,
           "scope": "resource",
-          "description": "Run `unity recompile` when a C# file in a Unity project is saved."
+          "order": 1,
+          "description": "Master switch for recompilation triggered by source or project environment changes."
+        },
+        "unityCompileOnSave.recompileOnSourceChanges": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "order": 2,
+          "description": "Recompile when C# sources, assembly definitions, compiler options, or managed DLLs change. Only effective when Recompile on Save is enabled."
+        },
+        "unityCompileOnSave.recompileOnProjectEnvironmentChanges": {
+          "type": "boolean",
+          "default": false,
+          "scope": "resource",
+          "order": 3,
+          "description": "Refresh, resolve packages when needed, and recompile when package or scripting define settings change. Only effective when Recompile on Save is enabled."
+        },
+        "unityCompileOnSave.quietPeriodSeconds": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0.2,
+          "maximum": 60,
+          "scope": "resource",
+          "order": 4,
+          "description": "While recompilation is pending, wait this many seconds after the last change to any file in Assets, Packages, or ProjectSettings. Other files restart the wait without requesting recompilation themselves."
+        },
+        "unityCompileOnSave.compileUnityOnSave": {
+          "type": "boolean",
+          "scope": "resource",
+          "deprecationMessage": "Use unityCompileOnSave.recompileOnSave instead.",
+          "description": "Legacy master switch; used only if Recompile on Save has not been explicitly configured."
         }
       }
     }
