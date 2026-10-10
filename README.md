@@ -45,6 +45,8 @@ The following commands are still useful when diagnosing an existing installation
 
 ## Usage
 
+The bottom status bar shows **Unity: Connected** only when Unity CLI can query recompilation readiness through the currently selected project's Pipeline. **Busy** means Pipeline responds but compilation is in progress; **Disconnected** means readiness could not be confirmed. It checks every five seconds and after task completion or project selection changes. Hover to see the exact project path, or click to set up/reconnect that project. In multi-root workspaces the active editor selects the project; outside a Unity project the item is hidden. Disable `unityCompileOnSave.showConnectionStatus` to hide it.
+
 The extension contributes four settings under **Unity Compile on Save**:
 
 | Setting | Default | Effect |

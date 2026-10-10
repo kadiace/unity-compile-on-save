@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -29,6 +29,11 @@ export class UnityTaskRunner implements vscode.Disposable {
 		private readonly provision = ensureUnityCli
 	) {}
 
+	async connectionExecutable(folder: vscode.WorkspaceFolder): Promise<string> {
+		if (!vscode.workspace.getConfiguration('unityCompileOnSave', folder.uri).get<boolean>('autoSetup', true)) { return 'unity'; }
+		return this.projects.get(folder.uri.toString())?.ready ?? this.cli ?? 'unity';
+	}
+
 	private async setup(folder: vscode.WorkspaceFolder, log: (message: string) => void, signal: AbortSignal): Promise<string> {
 		if (!vscode.workspace.isTrusted) {
 			throw new Error('Trust this workspace before installing Unity CLI or connecting Unity Pipeline.');
@@ -57,9 +62,15 @@ export class UnityTaskRunner implements vscode.Disposable {
 			'pid' in instance && typeof instance.pid === 'number' && instance.pid > 0);
 		if (!running) {
 			log('Opening this project in its installed Unity Editor to connect Pipeline.');
-			const opened = await runCli(executable, ['open', projectRoot, '--non-interactive'], options);
-			log(opened.stdout);
-			log(opened.stderr);
+			// The Editor can inherit CLI output handles. Do not wait for its lifetime to close those pipes.
+			await new Promise<void>((resolve, reject) => {
+				const child = spawn(executable, ['open', projectRoot, '--non-interactive'],
+					{ cwd: projectRoot, windowsHide: true, signal, timeout: 180_000, stdio: 'ignore' });
+				child.once('error', reject);
+				child.once('exit', (code) => {
+					if (code === 0) { resolve(); } else { reject(new Error(`Unity CLI could not open this project's Editor (exit ${code}).`)); }
+				});
+			});
 		}
 		log('Waiting for the Unity Editor to finish loading Pipeline and compiling scripts...');
 		await waitUntilEditorIdle(projectRoot, executable, signal);

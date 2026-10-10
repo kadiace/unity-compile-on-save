@@ -1,0 +1,1 @@
+Nested Unity project selection fixture.

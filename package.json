@@ -4,7 +4,7 @@
   "description": "Automatically install Unity CLI, connect Unity Pipeline, and recompile Unity scripts after saves or Git changes using VS Code tasks.",
   "publisher": "kadiace",
   "license": "MIT",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "engines": {
     "vscode": "^1.138.0"
   },
@@ -28,6 +28,12 @@
     "configuration": {
       "title": "Unity Compile on Save",
       "properties": {
+        "unityCompileOnSave.showConnectionStatus": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "description": "Show whether Unity CLI can recompile through the current project's Pipeline in the VS Code status bar."
+        },
         "unityCompileOnSave.autoSetup": {
           "type": "boolean",
           "default": true,

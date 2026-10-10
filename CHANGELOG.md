@@ -6,6 +6,12 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.0.8]
+
+- Show project-scoped Unity Pipeline recompilation readiness in the VS Code status bar, with periodic connection checks and a reconnect action.
+- Keep connection checks aligned with the CLI used for saves, select the most specific Unity root in nested workspaces, and show newly triggered recompilation as busy.
+- Fix automatic setup waiting on output handles inherited by the launched Unity Editor, allowing saved changes to compile after cold startup.
+
 ## [0.0.7]
 
 - Fix saves being ignored when neither the new nor legacy master setting was explicitly configured.

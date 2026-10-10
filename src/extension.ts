@@ -3,6 +3,7 @@ import { closeSync, existsSync, openSync, readFileSync, readSync } from 'node:fs
 import path from 'node:path';
 import * as vscode from 'vscode';
 import { UnityTaskRunner } from './unityTasks';
+import { checkConnection, ConnectionStatusBar } from './connectionStatus';
 
 export type Change = 'source' | 'environment' | 'packages';
 type Pending = { uri: vscode.Uri; kinds: Set<Change>; timer?: NodeJS.Timeout };
@@ -233,6 +234,11 @@ export function activate(context: vscode.ExtensionContext): void {
 	const runner = new UnityTaskRunner(context.globalStorageUri.fsPath, output);
 	const unityFolders = (): vscode.WorkspaceFolder[] => (vscode.workspace.workspaceFolders ?? []).filter((folder) =>
 		folder.uri.scheme === 'file' && existsSync(path.join(folder.uri.fsPath, 'ProjectSettings', 'ProjectVersion.txt')));
+	const connection = new ConnectionStatusBar(async (folder, signal) => {
+		const executable = await runner.connectionExecutable(folder);
+		signal.throwIfAborted();
+		return checkConnection(folder.uri.fsPath, executable, signal);
+	}, unityFolders);
 	const folderFor = (root: string): vscode.WorkspaceFolder => {
 		const folder = unityFolders().find((item) => path.relative(item.uri.fsPath, root) === '');
 		if (!folder) {
@@ -283,6 +289,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	context.subscriptions.push(
 		output,
 		runner,
+		connection,
 		vscode.tasks.registerTaskProvider('unityCompileOnSave', {
 			provideTasks: () => vscode.workspace.isTrusted ? unityFolders().flatMap((folder) =>
 				[runner.createTask(folder, 'setup'), runner.createTask(folder, 'recompile')]) : [],
@@ -297,8 +304,8 @@ export function activate(context: vscode.ExtensionContext): void {
 					runner.createTask(scope, operation, undefined, task.definition) : undefined;
 			}
 		}),
-		vscode.commands.registerCommand('unityCompileOnSave.setup', async () => {
-			for (const folder of unityFolders()) {
+		vscode.commands.registerCommand('unityCompileOnSave.setup', async (uri?: vscode.Uri) => {
+			for (const folder of unityFolders().filter((folder) => !uri || folder.uri.toString() === uri.toString())) {
 				await runner.execute(folder, 'setup');
 			}
 		}),
