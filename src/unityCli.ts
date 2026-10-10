@@ -4,16 +4,18 @@ import type { Change } from './extension';
 
 const runCli = promisify(execFile);
 
-export async function waitUntilEditorIdle(projectRoot: string): Promise<void> {
-	const deadline = Date.now() + 120_000;
+export async function waitUntilEditorIdle(projectRoot: string, executable = 'unity', signal?: AbortSignal): Promise<void> {
+	const deadline = Date.now() + 300_000;
 	while (true) {
+		signal?.throwIfAborted();
 		let stdout: string;
 		try {
-			({ stdout } = await runCli('unity', ['command', '--project-path', projectRoot, 'recompile_status', '--json'],
-				{ cwd: projectRoot, windowsHide: true }));
+			({ stdout } = await runCli(executable, ['command', '--project-path', projectRoot, 'recompile_status', '--json'],
+				{ cwd: projectRoot, windowsHide: true, signal, timeout: 30_000 }));
 		} catch (error) {
-			if (!(error instanceof Error) || !/unreachable|connection refused|ECONNREFUSED|No Unity Editor instances found/i.test(error.message)) {
-				throw error;
+			const detail = error instanceof Error ? `${error.message}\n${'stdout' in error && typeof error.stdout === 'string' ? error.stdout : ''}\n${'stderr' in error && typeof error.stderr === 'string' ? error.stderr : ''}` : '';
+			if (signal?.aborted || !(error instanceof Error) || !/unreachable|connection refused|connection reset|ECONNREFUSED|ECONNRESET|No Unity Editor instances found|No running Unity Editor|No connected Unity Editor|No Pipeline instance found|Network error/i.test(detail)) {
+				throw new Error(detail || String(error), { cause: error });
 			}
 			if (Date.now() >= deadline) {
 				throw error;
@@ -38,13 +40,13 @@ export async function waitUntilEditorIdle(projectRoot: string): Promise<void> {
 	}
 }
 
-export async function runRecompile(projectRoot: string, kinds: ReadonlySet<Change>): Promise<void> {
-	const options = { cwd: projectRoot, windowsHide: true };
+export async function runRecompile(projectRoot: string, kinds: ReadonlySet<Change>, executable = 'unity', signal?: AbortSignal): Promise<void> {
+	const options = { cwd: projectRoot, windowsHide: true, signal, timeout: 180_000 };
 	if (kinds.has('packages')) {
-		await runCli('unity', ['command', '--project-path', projectRoot, 'package_resolve'], options);
+		await runCli(executable, ['command', '--project-path', projectRoot, 'package_resolve'], options);
 		const deadline = Date.now() + 120_000;
 		while (true) {
-			const { stdout } = await runCli('unity', ['command', '--project-path', projectRoot, 'package_status', '--json'], options);
+			const { stdout } = await runCli(executable, ['command', '--project-path', projectRoot, 'package_status', '--json'], options);
 			const response: unknown = JSON.parse(stdout);
 			if (!response || typeof response !== 'object' || !('data' in response) || !response.data ||
 				typeof response.data !== 'object' || !('result' in response.data) || !response.data.result ||
@@ -62,8 +64,9 @@ export async function runRecompile(projectRoot: string, kinds: ReadonlySet<Chang
 		}
 	}
 	if (kinds.has('environment') || kinds.has('packages')) {
-		await runCli('unity', ['command', '--project-path', projectRoot, 'menu', 'Assets/Refresh'], options);
+		await runCli(executable, ['command', '--project-path', projectRoot, 'menu', 'Assets/Refresh'], options);
 	}
-	await waitUntilEditorIdle(projectRoot);
-	await runCli('unity', ['recompile', '--project-path', projectRoot], options);
+	await waitUntilEditorIdle(projectRoot, executable, signal);
+	await runCli(executable, ['recompile', '--project-path', projectRoot], options);
+	await waitUntilEditorIdle(projectRoot, executable, signal);
 }

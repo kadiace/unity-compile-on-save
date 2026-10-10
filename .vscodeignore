@@ -1,5 +1,6 @@
 .vscode/**
 .vscode-test/**
+.omo/**
 src/**
 out/test/**
 .gitignore

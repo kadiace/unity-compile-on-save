@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { closeSync, existsSync, openSync, readFileSync, readSync } from 'node:fs';
 import path from 'node:path';
 import * as vscode from 'vscode';
-import { runRecompile, waitUntilEditorIdle } from './unityCli';
+import { UnityTaskRunner } from './unityTasks';
 
 export type Change = 'source' | 'environment' | 'packages';
 type Pending = { uri: vscode.Uri; kinds: Set<Change>; timer?: NodeJS.Timeout };
@@ -26,7 +26,11 @@ function enabled(config: vscode.WorkspaceConfiguration): boolean {
 	if (setting?.globalValue !== undefined || setting?.workspaceValue !== undefined || setting?.workspaceFolderValue !== undefined) {
 		return config.get<boolean>('recompileOnSave', true);
 	}
-	return config.get<boolean>('compileUnityOnSave', true);
+	const legacy = config.inspect<boolean>('compileUnityOnSave');
+	if (legacy?.globalValue !== undefined || legacy?.workspaceValue !== undefined || legacy?.workspaceFolderValue !== undefined) {
+		return config.get<boolean>('compileUnityOnSave', true);
+	}
+	return config.get<boolean>('recompileOnSave', true);
 }
 
 function isManagedDll(filePath: string): boolean {
@@ -90,11 +94,12 @@ export function createRecompileHandler(
 ): {
 	onSave: (document: vscode.TextDocument) => void;
 	onFileChange: (uri: vscode.Uri) => void;
+	forget: (projectRoot: string) => void;
 	dispose: () => void;
 } {
 	const pending = new Map<string, Pending>();
 	const running = new Map<string, ReadonlySet<Change>>();
-	const waiting = new Set<string>();
+	const waiting = new Map<string, Pending>();
 	const resolvedLocks = new Map<string, string>();
 	const lockFingerprint = (projectRoot: string): string | undefined => {
 		const lockFile = path.join(projectRoot, 'Packages', 'packages-lock.json');
@@ -137,21 +142,24 @@ export function createRecompileHandler(
 		if (!item || item.timer || waiting.has(projectRoot) || running.has(projectRoot)) {
 			return;
 		}
-		waiting.add(projectRoot);
+		waiting.set(projectRoot, item);
 		void waitUntilEditorIdle(projectRoot).then(() => {
+			if (waiting.get(projectRoot) !== item) { return; }
 			waiting.delete(projectRoot);
 			if (pending.get(projectRoot)?.timer === undefined) {
 				flush(projectRoot);
 			}
 		}).catch((error: unknown) => {
+			if (waiting.get(projectRoot) !== item) { return; }
 			waiting.delete(projectRoot);
 			pending.delete(projectRoot);
+			waiting.delete(projectRoot);
 			void vscode.window.showErrorMessage(`Unity recompilation failed: ${error instanceof Error ? error.message : String(error)}`);
 		});
 	};
 
 	const schedule = (uri: vscode.Uri): void => {
-		if (uri.scheme !== 'file') {
+		if (uri.scheme !== 'file' || !vscode.workspace.isTrusted) {
 			return;
 		}
 		const projectRoot = findUnityProjectRoot(uri.fsPath);
@@ -202,6 +210,11 @@ export function createRecompileHandler(
 			schedule(document.uri);
 		},
 		onFileChange: schedule,
+		forget(projectRoot: string): void {
+			const state = pending.get(projectRoot);
+			if (state?.timer) { clearTimeout(state.timer); }
+			pending.delete(projectRoot);
+		},
 		dispose() {
 			for (const item of pending.values()) {
 				if (item.timer) {
@@ -209,13 +222,37 @@ export function createRecompileHandler(
 				}
 			}
 			pending.clear();
+			waiting.clear();
 			resolvedLocks.clear();
 		}
 	};
 }
 
 export function activate(context: vscode.ExtensionContext): void {
-	const handler = createRecompileHandler(runRecompile, waitUntilEditorIdle);
+	const output = vscode.window.createOutputChannel('Unity Compile on Save');
+	const runner = new UnityTaskRunner(context.globalStorageUri.fsPath, output);
+	const unityFolders = (): vscode.WorkspaceFolder[] => (vscode.workspace.workspaceFolders ?? []).filter((folder) =>
+		folder.uri.scheme === 'file' && existsSync(path.join(folder.uri.fsPath, 'ProjectSettings', 'ProjectVersion.txt')));
+	const folderFor = (root: string): vscode.WorkspaceFolder => {
+		const folder = unityFolders().find((item) => path.relative(item.uri.fsPath, root) === '');
+		if (!folder) {
+			throw new Error('The Unity project root is no longer open in this workspace.');
+		}
+		return folder;
+	};
+	const handler = createRecompileHandler(
+		(root, kinds) => runner.execute(folderFor(root), 'recompile', kinds),
+		(root) => runner.waitUntilIdle(folderFor(root))
+	);
+	const setupFolder = (folder: vscode.WorkspaceFolder): void => {
+		const config = vscode.workspace.getConfiguration('unityCompileOnSave', folder.uri);
+		if (vscode.workspace.isTrusted && enabled(config) && config.get<boolean>('autoSetup', true)) {
+			void runner.execute(folder, 'setup').catch((error: unknown) => {
+				void vscode.window.showErrorMessage(`Unity automatic setup failed: ${error instanceof Error ? error.message : String(error)}`, 'Show Output')
+					.then((choice) => { if (choice === 'Show Output') { output.show(); } });
+			});
+		}
+	};
 	const watchers = new Map<string, vscode.Disposable>();
 	const watchFolder = (folder: vscode.WorkspaceFolder): void => {
 		if (folder.uri.scheme !== 'file' || !existsSync(path.join(folder.uri.fsPath, 'ProjectSettings', 'ProjectVersion.txt'))) {
@@ -238,14 +275,50 @@ export function activate(context: vscode.ExtensionContext): void {
 				subscription.dispose();
 			}
 		}));
+		setupFolder(folder);
 	};
 	for (const folder of vscode.workspace.workspaceFolders ?? []) {
 		watchFolder(folder);
 	}
 	context.subscriptions.push(
+		output,
+		runner,
+		vscode.tasks.registerTaskProvider('unityCompileOnSave', {
+			provideTasks: () => vscode.workspace.isTrusted ? unityFolders().flatMap((folder) =>
+				[runner.createTask(folder, 'setup'), runner.createTask(folder, 'recompile')]) : [],
+			resolveTask: (task) => {
+				const scope = task.scope;
+				if (!vscode.workspace.isTrusted || !scope || typeof scope === 'number' ||
+					!unityFolders().some((folder) => folder.uri.toString() === scope.uri.toString())) {
+					return undefined;
+				}
+				const operation: unknown = task.definition.operation;
+				return operation === 'setup' || operation === 'recompile' ?
+					runner.createTask(scope, operation, undefined, task.definition) : undefined;
+			}
+		}),
+		vscode.commands.registerCommand('unityCompileOnSave.setup', async () => {
+			for (const folder of unityFolders()) {
+				await runner.execute(folder, 'setup');
+			}
+		}),
+		vscode.workspace.onDidGrantWorkspaceTrust(() => { for (const folder of unityFolders()) { setupFolder(folder); } }),
+		vscode.workspace.onDidChangeConfiguration((event) => {
+			if (event.affectsConfiguration('unityCompileOnSave.recompileOnSave') ||
+				event.affectsConfiguration('unityCompileOnSave.compileUnityOnSave') || event.affectsConfiguration('unityCompileOnSave.autoSetup')) {
+				for (const folder of unityFolders()) {
+					if (!enabled(vscode.workspace.getConfiguration('unityCompileOnSave', folder.uri))) {
+						handler.forget(folder.uri.fsPath);
+						runner.forget(folder);
+					} else { setupFolder(folder); }
+				}
+			}
+		}),
 		vscode.workspace.onDidSaveTextDocument(handler.onSave),
 		vscode.workspace.onDidChangeWorkspaceFolders((event) => {
 			for (const folder of event.removed) {
+				handler.forget(folder.uri.fsPath);
+				runner.forget(folder);
 				watchers.get(folder.uri.toString())?.dispose();
 				watchers.delete(folder.uri.toString());
 			}

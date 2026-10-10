@@ -6,6 +6,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.0.7]
+
+- Fix saves being ignored when neither the new nor legacy master setting was explicitly configured.
+- Automatically provision Unity CLI 1.0.0-beta.11 or later, preferring stable releases for fresh installations, and connect Unity Pipeline when a trusted Unity project opens.
+- Run setup and recompilation through discoverable VS Code tasks with progress, cancellation, and a reconnect command. Open the project's installed Editor when needed.
+- Add an automatic setup opt-out for users who manage their own CLI and Pipeline.
+
 ## [0.0.6]
 
 - Extend a pending quiet period on any file change in `Assets/`, `Packages/`, or `ProjectSettings/`, without treating unrelated files as compile triggers.

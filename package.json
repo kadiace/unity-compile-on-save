@@ -1,22 +1,40 @@
 {
   "name": "unity-compile-on-save",
   "displayName": "Unity Compile on Save",
-  "description": "Recompile Unity scripts after VS Code saves or Git changes. Wait for the Editor and coalesce changes per project. Requires Unity CLI 1.0.0-beta.11+.",
+  "description": "Automatically install Unity CLI, connect Unity Pipeline, and recompile Unity scripts after saves or Git changes using VS Code tasks.",
   "publisher": "kadiace",
   "license": "MIT",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "engines": {
     "vscode": "^1.138.0"
   },
   "categories": [
     "Other"
   ],
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": ["workspaceContains:ProjectSettings/ProjectVersion.txt", "onStartupFinished"],
+  "extensionKind": ["workspace"],
+  "capabilities": {
+    "untrustedWorkspaces": { "supported": false, "description": "Automatic setup installs Unity CLI and modifies Unity package dependencies, then launches the Editor." },
+    "virtualWorkspaces": { "supported": false }
+  },
   "main": "./out/extension.js",
   "contributes": {
+    "commands": [{ "command": "unityCompileOnSave.setup", "title": "Unity Compile on Save: Set Up / Reconnect Unity Pipeline" }],
+    "taskDefinitions": [{
+      "type": "unityCompileOnSave",
+      "required": ["operation"],
+      "properties": { "operation": { "type": "string", "enum": ["setup", "recompile"], "description": "Connect Unity Pipeline or recompile scripts." } }
+    }],
     "configuration": {
       "title": "Unity Compile on Save",
       "properties": {
+        "unityCompileOnSave.autoSetup": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "order": 0,
+          "description": "Automatically install a supported Unity CLI, install Unity Pipeline, and open the project in its installed Editor. Disable to use a CLI and Pipeline you manage yourself; explicit setup tasks remain available."
+        },
         "unityCompileOnSave.recompileOnSave": {
           "type": "boolean",
           "default": true,
