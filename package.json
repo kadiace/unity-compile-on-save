@@ -4,7 +4,7 @@
   "description": "By default, automatically set up Unity CLI/Pipeline, launch an installed Editor, and recompile scripts in trusted Unity workspaces. Includes CLI logs and C# Problems.",
   "publisher": "kadiace",
   "license": "MIT",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "engines": {
     "vscode": "^1.138.0"
   },
@@ -67,7 +67,7 @@
           "maximum": 60,
           "scope": "resource",
           "order": 4,
-          "description": "While recompilation is pending, wait this many seconds after the last change to any file in Assets, Packages, or ProjectSettings. Other files restart the wait without requesting recompilation themselves."
+          "description": "While recompilation is pending, wait this many seconds after the last change to any file in Assets, Packages, or ProjectSettings. Observed Git commands in shell-integrated VS Code terminals pause the wait and restart it on completion. Other files restart the wait without requesting recompilation themselves."
         },
         "unityCompileOnSave.compileUnityOnSave": {
           "type": "boolean",

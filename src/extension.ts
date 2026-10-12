@@ -108,6 +108,19 @@ export function createRecompileHandler(
 	const running = new Map<string, ReadonlySet<Change>>();
 	const waiting = new Map<string, Pending>();
 	const resolvedLocks = new Map<string, string>();
+	const gitOperations = new Map<vscode.TerminalShellExecution, { readonly terminal: vscode.Terminal; readonly roots: ReadonlySet<string> }>();
+	const gitBusy = (projectRoot: string): boolean => [...gitOperations.values()].some((operation) => operation.roots.has(projectRoot));
+	const restartQuietPeriod = (projectRoot: string): void => {
+		const item = pending.get(projectRoot);
+		if (!item) { return; }
+		if (item.timer) { clearTimeout(item.timer); item.timer = undefined; }
+		if (gitBusy(projectRoot)) { return; }
+		const quietPeriod = vscode.workspace.getConfiguration('unityCompileOnSave', item.uri).get<number>('quietPeriodSeconds', 2);
+		item.timer = setTimeout(() => {
+			item.timer = undefined;
+			prepare(projectRoot);
+		}, quietPeriod * 1000);
+	};
 	const diagnosticBelongsTo = (uri: vscode.Uri, projectRoot: string): boolean => {
 		if (uri.scheme !== 'file' || path.extname(uri.fsPath).toLowerCase() !== '.cs') { return false; }
 		const folder = vscode.workspace.getWorkspaceFolder(uri);
@@ -123,7 +136,7 @@ export function createRecompileHandler(
 
 	const flush = (projectRoot: string): void => {
 		const item = pending.get(projectRoot);
-		if (!item || running.has(projectRoot)) {
+		if (!item || item.timer || running.has(projectRoot) || gitBusy(projectRoot)) {
 			return;
 		}
 		// Diagnostics can change while the Editor readiness check is in flight.
@@ -169,7 +182,7 @@ export function createRecompileHandler(
 
 	const prepare = (projectRoot: string): void => {
 		const item = pending.get(projectRoot);
-		if (!item || item.timer || waiting.has(projectRoot) || running.has(projectRoot)) {
+		if (!item || item.timer || waiting.has(projectRoot) || running.has(projectRoot) || gitBusy(projectRoot)) {
 			return;
 		}
 		const config = vscode.workspace.getConfiguration('unityCompileOnSave', item.uri);
@@ -244,17 +257,66 @@ export function createRecompileHandler(
 		if (requested && kind) {
 			item.kinds.add(kind);
 		}
-		if (item.timer) {
-			clearTimeout(item.timer);
-		}
-		const quietPeriod = config.get<number>('quietPeriodSeconds', 2);
-		item.timer = setTimeout(() => {
-			item.timer = undefined;
-			prepare(projectRoot);
-		}, quietPeriod * 1000);
 		pending.set(projectRoot, item);
+		restartQuietPeriod(projectRoot);
 	};
 
+	const repositoryRoot = (directory: string): string | undefined => {
+		let current = directory;
+		while (!existsSync(path.join(current, '.git'))) {
+			const parent = path.dirname(current);
+			if (parent === current) { return undefined; }
+			current = parent;
+		}
+		return current;
+	};
+	const contains = (parent: string, child: string): boolean => {
+		const relative = path.relative(parent, child);
+		return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+	};
+	const gitStarted = vscode.window.onDidStartTerminalShellExecution(({ terminal, execution, shellIntegration }) => {
+		const cwd = execution.cwd ?? shellIntegration.cwd;
+		if (cwd?.scheme !== 'file') { return; }
+		const roots = new Set<string>();
+		// Parse only direct Git commands, not arbitrary shell scripts or aliases.
+		for (const match of execution.commandLine.value.matchAll(/(?:^|[;&|\r\n])\s*(?:&\s*)?git(?:\.exe)?\s+([^;&|\r\n]*)/gi)) {
+			const args = (match[1].match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? []).map((arg) => arg.replace(/^["']|["']$/g, ''));
+			let directory = cwd.fsPath;
+			let index = 0;
+			while (args[index]?.startsWith('-')) {
+				const option = args[index++];
+				if (option === '-C' || option === '-c') {
+					const value = args[index++];
+					if (value === undefined) { break; }
+					if (option === '-C') { directory = path.resolve(directory, value); }
+				}
+			}
+			if (!/^(checkout|switch|pull|merge|rebase|reset|restore|stash|cherry-pick|revert|apply|clean)$/.test(args[index] ?? '')) { continue; }
+			const repository = repositoryRoot(directory);
+			for (const folder of vscode.workspace.workspaceFolders ?? []) {
+				const root = folder.uri.fsPath;
+				if (folder.uri.scheme === 'file' && existsSync(path.join(root, 'ProjectSettings', 'ProjectVersion.txt')) &&
+					(contains(root, directory) || contains(directory, root) || (repository !== undefined && repositoryRoot(root) === repository))) {
+					roots.add(root);
+				}
+			}
+		}
+		if (roots.size === 0) { return; }
+		gitOperations.set(execution, { terminal, roots });
+		for (const root of roots) { restartQuietPeriod(root); }
+	});
+	const releaseGit = (execution: vscode.TerminalShellExecution): void => {
+		const operation = gitOperations.get(execution);
+		if (!operation) { return; }
+		gitOperations.delete(execution);
+		for (const root of operation.roots) { restartQuietPeriod(root); }
+	};
+	const gitEnded = vscode.window.onDidEndTerminalShellExecution(({ execution }) => releaseGit(execution));
+	const terminalClosed = vscode.window.onDidCloseTerminal((terminal) => {
+		for (const [execution, operation] of gitOperations) {
+			if (operation.terminal === terminal) { releaseGit(execution); }
+		}
+	});
 	const diagnosticChanges = vscode.languages.onDidChangeDiagnostics((event) => {
 		for (const projectRoot of pending.keys()) {
 			if (event.uris.some((uri) => diagnosticBelongsTo(uri, projectRoot))) { prepare(projectRoot); }
@@ -272,6 +334,10 @@ export function createRecompileHandler(
 			waiting.delete(projectRoot);
 		},
 		dispose() {
+			gitStarted.dispose();
+			gitEnded.dispose();
+			terminalClosed.dispose();
+			gitOperations.clear();
 			diagnosticChanges.dispose();
 			for (const item of pending.values()) {
 				if (item.timer) {

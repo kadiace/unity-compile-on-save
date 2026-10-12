@@ -19,6 +19,66 @@ suite('Quiet period', () => {
 		}
 	});
 
+	for (const duringReadiness of [false, true]) {
+		test(`does not compile checkout changes while a terminal Git command is still running without file changes (during readiness=${duringReadiness})`, async function () {
+			this.timeout(20000);
+			await config.update('recompileOnSave', true, vscode.ConfigurationTarget.Global);
+			await config.update('recompileOnSourceChanges', true, vscode.ConfigurationTarget.Global);
+			await config.update('quietPeriodSeconds', 0.2, vscode.ConfigurationTarget.Global);
+			let calls = 0;
+			let waits = 0;
+			let releaseIdle: (() => void) | undefined;
+			const idle = new Promise<void>((resolve) => { releaseIdle = resolve; });
+			let probed: (() => void) | undefined;
+			const readinessStarted = new Promise<void>((resolve) => { probed = resolve; });
+			const handler = createRecompileHandler(async () => { calls++; }, async () => { waits++; probed?.(); await idle; });
+			const terminal = vscode.window.createTerminal({
+				name: 'Git quiet-period regression', cwd: project,
+				shellPath: process.platform === 'win32' ? 'pwsh.exe' : '/bin/bash'
+			});
+			const subscriptions: vscode.Disposable[] = [];
+			try {
+				const integration = await new Promise<vscode.TerminalShellIntegration>((resolve, reject) => {
+					const timeout = setTimeout(() => reject(new Error('Terminal shell integration did not activate')), 10000);
+					subscriptions.push(vscode.window.onDidChangeTerminalShellIntegration((event) => {
+						if (event.terminal === terminal) { clearTimeout(timeout); resolve(event.shellIntegration); }
+					}));
+					if (terminal.shellIntegration) { clearTimeout(timeout); resolve(terminal.shellIntegration); }
+				});
+				let ended = false;
+				const finished = new Promise<void>((resolve) => {
+					subscriptions.push(vscode.window.onDidEndTerminalShellExecution((event) => {
+						if (event.terminal === terminal) { ended = true; resolve(); }
+					}));
+				});
+				const started = new Promise<void>((resolve) => {
+					subscriptions.push(vscode.window.onDidStartTerminalShellExecution((event) => {
+						if (event.terminal === terminal) { resolve(); }
+					}));
+				});
+				if (duringReadiness) { handler.onFileChange(uri); await readinessStarted; }
+				integration.executeCommand(process.platform === 'win32' ? 'git checkout -h; Start-Sleep -Seconds 2' : 'git checkout -h; sleep 2');
+				await started;
+				handler.onFileChange(uri);
+				releaseIdle?.();
+				await new Promise<void>((resolve) => setTimeout(resolve, 400));
+				assert.equal(ended, false, 'Git command must still be active at the assertion');
+				assert.equal(waits, duringReadiness ? 1 : 0, 'Editor readiness must not be queried during the Git operation');
+				assert.equal(calls, 0, 'Checkout changes must not compile during the following Git command');
+				await finished;
+				await new Promise<void>((resolve) => setTimeout(resolve, 100));
+				assert.equal(calls, 0, 'A full quiet period must begin after command completion');
+				await new Promise<void>((resolve) => setTimeout(resolve, 300));
+				assert.equal(calls, 1);
+			} finally {
+				releaseIdle?.();
+				for (const subscription of subscriptions) { subscription.dispose(); }
+				terminal.dispose();
+				handler.dispose();
+			}
+		});
+	}
+
 	test('coalesces changes spaced farther apart than 200 ms until a full quiet period passes', async () => {
 		await config.update('recompileOnSave', true, vscode.ConfigurationTarget.Global);
 		await config.update('recompileOnSourceChanges', true, vscode.ConfigurationTarget.Global);

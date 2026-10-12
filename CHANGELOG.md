@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.0.11]
+
+- Hold pending automatic recompilation during worktree-changing Git commands observed in shell-integrated VS Code terminals, then restart the full quiet period after the last command ends. This prevents compilation during a long fetch between checkout and pull.
 - Validate project-scoped C# Problems before automatic recompilation, allowing warnings and excluding previous Unity CLI compiler diagnostics.
 - Retain and merge changes while language-server errors block compilation, then resume on diagnostic changes without extra CLI polling or bypassing the quiet period.
 
