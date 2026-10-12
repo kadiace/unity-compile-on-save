@@ -22,6 +22,25 @@ export class CliProcessError extends Error {
 	}
 }
 
+export function processFailure(error: unknown): { readonly code: number | null; readonly stdout: string; readonly stderr: string; readonly cancelled: boolean; readonly connection: boolean } {
+	let cause = error;
+	let code: number | null = null;
+	let stdout = '';
+	let stderr = '';
+	let cancelled = false;
+	const messages: string[] = [];
+	while (cause instanceof Error) {
+		messages.push(cause.message);
+		cancelled ||= cause.name === 'AbortError';
+		if ('code' in cause && typeof cause.code === 'number') { code ??= cause.code; }
+		if ('stdout' in cause && typeof cause.stdout === 'string') { stdout ||= cause.stdout; }
+		if ('stderr' in cause && typeof cause.stderr === 'string') { stderr ||= cause.stderr; }
+		cause = cause.cause;
+	}
+	return { code, stdout, stderr, cancelled, connection: !cancelled && (code === 7 || (code === null &&
+		/unreachable|connection refused|connection reset|ECONNREFUSED|ECONNRESET|No Unity Editor instances found|No running Unity Editor|No connected Unity Editor|No Pipeline instance found|Network error/i.test(`${messages.join('\n')}\n${stdout}\n${stderr}`))) };
+}
+
 function cleanLauncherLogs(directory: string): void {
 	try {
 		rmSync(directory, { recursive: true, force: true });

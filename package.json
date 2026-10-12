@@ -4,7 +4,7 @@
   "description": "By default, automatically set up Unity CLI/Pipeline, launch an installed Editor, and recompile scripts in trusted Unity workspaces. Includes CLI logs and C# Problems.",
   "publisher": "kadiace",
   "license": "MIT",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "engines": {
     "vscode": "^1.138.0"
   },

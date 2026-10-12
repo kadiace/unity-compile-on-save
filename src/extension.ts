@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import { closeSync, existsSync, openSync, readFileSync, readSync } from 'node:fs';
 import path from 'node:path';
 import * as vscode from 'vscode';
-import { UnityTaskRunner } from './unityTasks';
+import { OperationError, UnityTaskRunner } from './unityTasks';
+import type { OperationResult } from './unityTasks';
+import { processFailure } from './cliProcess';
 import { checkConnection, ConnectionStatusBar } from './connectionStatus';
 
 export type Change = 'source' | 'environment' | 'packages';
@@ -93,7 +95,7 @@ export function createRecompileHandler(
 	run: (projectRoot: string, kinds: ReadonlySet<Change>) => Promise<void>,
 	waitUntilEditorIdle: (projectRoot: string) => Promise<void> = async () => {},
 	reportFailure: (error: unknown) => void = (error) => {
-		void vscode.window.showErrorMessage(`Unity recompilation failed: ${error instanceof Error ? error.message : String(error)}`);
+		console.error('Unity recompilation failed', error);
 	}
 ): {
 	onSave: (document: vscode.TextDocument) => void;
@@ -127,8 +129,23 @@ export function createRecompileHandler(
 			return;
 		}
 		running.set(projectRoot, kinds);
-		void run(projectRoot, kinds).catch(reportFailure).finally(() => {
-			if (kinds.has('packages')) {
+		let packagesResolved = false;
+		void run(projectRoot, kinds).then(() => { packagesResolved = kinds.has('packages'); }).catch((error: unknown) => {
+			packagesResolved = error instanceof OperationError && error.result.packagesResolved;
+			reportFailure(error);
+			if (error instanceof OperationError && error.result.status === 'deferred') {
+				const retained = pending.get(projectRoot) ?? item;
+				for (const kind of kinds) { retained.kinds.add(kind); }
+				if (!retained.timer) {
+					retained.timer = setTimeout(() => {
+						retained.timer = undefined;
+						prepare(projectRoot);
+					}, 5000);
+				}
+				pending.set(projectRoot, retained);
+			}
+		}).finally(() => {
+			if (packagesResolved) {
 				const fingerprint = lockFingerprint(projectRoot);
 				if (fingerprint) {
 					resolvedLocks.set(projectRoot, fingerprint);
@@ -154,8 +171,20 @@ export function createRecompileHandler(
 		}).catch((error: unknown) => {
 			if (waiting.get(projectRoot) !== item) { return; }
 			waiting.delete(projectRoot);
-			pending.delete(projectRoot);
 			reportFailure(error);
+			if (processFailure(error).connection || (error instanceof OperationError && error.result.status === 'deferred')) {
+				const retained = pending.get(projectRoot);
+				if (retained && !retained.timer) {
+					retained.timer = setTimeout(() => {
+						retained.timer = undefined;
+						prepare(projectRoot);
+					}, 5000);
+				}
+			} else {
+				const discarded = pending.get(projectRoot);
+				if (discarded?.timer) { clearTimeout(discarded.timer); }
+				pending.delete(projectRoot);
+			}
 		});
 	};
 
@@ -248,15 +277,15 @@ export function activate(context: vscode.ExtensionContext): UnityTaskRunner {
 		return folder;
 	};
 	const handler = createRecompileHandler(
-		(root, kinds) => runner.execute(folderFor(root), 'recompile', kinds),
+		async (root, kinds) => { await runner.execute(folderFor(root), 'recompile', kinds); },
 		(root) => runner.waitUntilIdle(folderFor(root)),
-		(error) => runner.reportFailure('Unity recompilation failed', error)
+		(error) => runner.reportFailure('Unity recompilation failed', error, false)
 	);
 	const setupFolder = (folder: vscode.WorkspaceFolder): void => {
 		const config = vscode.workspace.getConfiguration('unityCompileOnSave', folder.uri);
 		if (vscode.workspace.isTrusted && enabled(config) && config.get<boolean>('autoSetup', true)) {
 			void runner.execute(folder, 'setup').catch((error: unknown) => {
-				runner.reportFailure('Unity automatic setup failed', error);
+				runner.reportFailure('Unity automatic setup failed', error, false);
 			});
 		}
 	};
@@ -292,17 +321,23 @@ export function activate(context: vscode.ExtensionContext): UnityTaskRunner {
 		runner,
 		connection,
 		vscode.commands.registerCommand('unityCompileOnSave.setup', async (uri?: vscode.Uri) => {
+			const results: OperationResult[] = [];
 			for (const folder of unityFolders().filter((folder) => !uri || folder.uri.toString() === uri.toString())) {
-				try { await runner.execute(folder, 'setup'); }
-				catch (error: unknown) { runner.reportFailure('Unity Pipeline setup failed', error); }
+				const result = await runner.request(folder, 'setup');
+				results.push(result);
+				if (result.status !== 'success' && result.status !== 'cancelled') { runner.reportFailure('Unity Pipeline setup failed', new Error(result.message)); }
 			}
+			return results;
 		}),
 		vscode.commands.registerCommand('unityCompileOnSave.recompile', async (uri?: vscode.Uri) => {
-			if (!vscode.workspace.isTrusted) { return; }
+			const results: OperationResult[] = [];
+			if (!vscode.workspace.isTrusted) { return results; }
 			for (const folder of unityFolders().filter((folder) => !uri || folder.uri.toString() === uri.toString())) {
-				try { await runner.execute(folder, 'recompile'); }
-				catch (error: unknown) { runner.reportFailure('Unity recompilation failed', error); }
+				const result = await runner.request(folder, 'recompile');
+				results.push(result);
+				if (result.status !== 'success' && result.status !== 'cancelled') { runner.reportFailure('Unity recompilation failed', new Error(result.message)); }
 			}
+			return results;
 		}),
 		runner.onDidComplete(() => connection.refresh()),
 		vscode.workspace.onDidGrantWorkspaceTrust(() => { for (const folder of unityFolders()) { setupFolder(folder); } }),

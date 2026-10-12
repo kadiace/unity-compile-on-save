@@ -2,6 +2,8 @@ import * as assert from 'node:assert/strict';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import { createRecompileHandler } from '../extension';
+import { CliProcessError } from '../cliProcess';
+import { OperationError } from '../unityTasks';
 
 suite('Quiet period', () => {
 	const project = path.resolve(__dirname, '../../src/test/fixtures/UnityProject');
@@ -178,5 +180,51 @@ suite('Quiet period', () => {
 		} finally {
 			handler.dispose();
 		}
+	});
+
+	test('retains a disconnected request and compiles once when readiness recovers without another change', async () => {
+		await config.update('recompileOnSave', true, vscode.ConfigurationTarget.Global);
+		await config.update('recompileOnSourceChanges', true, vscode.ConfigurationTarget.Global);
+		await config.update('quietPeriodSeconds', 0.2, vscode.ConfigurationTarget.Global);
+		let connected = false;
+		let calls = 0;
+		let failed: (() => void) | undefined;
+		const disconnected = new Promise<void>((resolve) => { failed = resolve; });
+		let completed: (() => void) | undefined;
+		const compiled = new Promise<void>((resolve) => { completed = resolve; });
+		const handler = createRecompileHandler(async () => { calls++; completed?.(); }, async () => {
+			if (!connected) { throw new CliProcessError('unity', 7, '', 'Network error'); }
+		}, () => { failed?.(); });
+		try {
+			handler.onFileChange(uri);
+			await disconnected;
+			assert.equal(calls, 0);
+			connected = true;
+			await compiled;
+			assert.equal(calls, 1);
+		} finally { handler.dispose(); }
+	});
+
+	test('retains changes when readiness is lost between the watcher probe and queued execution', async () => {
+		await config.update('recompileOnSave', true, vscode.ConfigurationTarget.Global);
+		await config.update('recompileOnSourceChanges', true, vscode.ConfigurationTarget.Global);
+		await config.update('quietPeriodSeconds', 0.2, vscode.ConfigurationTarget.Global);
+		let attempts = 0;
+		let completed: (() => void) | undefined;
+		const compiled = new Promise<void>((resolve) => { completed = resolve; });
+		const handler = createRecompileHandler(async () => {
+			attempts++;
+			if (attempts === 1) {
+				throw new OperationError({ projectRoot: project, operation: 'recompile', status: 'deferred', stage: 'preflight',
+					exitCode: 7, recompileAttempts: 0, packagesResolved: false, stdout: '', stderr: 'Network error', message: 'Network error' },
+				new CliProcessError('unity', 7, '', 'Network error'));
+			}
+			completed?.();
+		}, async () => {}, () => {});
+		try {
+			handler.onFileChange(uri);
+			await compiled;
+			assert.equal(attempts, 2);
+		} finally { handler.dispose(); }
 	});
 });

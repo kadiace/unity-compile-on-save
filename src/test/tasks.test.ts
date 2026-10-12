@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import { UnityTaskRunner } from '../unityTasks';
+import type { OperationResult } from '../unityTasks';
 import { runProcess } from '../cliProcess';
 
 suite('Unity background operations', () => {
@@ -227,5 +228,147 @@ suite('Unity background operations', () => {
 			for (const directory of [stale, active]) { rmSync(directory, { recursive: true, force: true }); }
 			rmSync(`${stale}.complete`, { force: true });
 		}
+	});
+
+	test('returns compiler failure with the actual exit code without retrying code 6', async () => {
+		assert.ok(folder);
+		writeFileSync(path.join(project, 'recompile'), 'require("node:fs").appendFileSync("pipeline-task-count.txt","compile\\n");console.error("Assets/Test.cs(7,2): error CS1002: ; expected");process.exitCode=6;');
+		const result = await runner.request(folder, 'recompile');
+		assert.equal(result.status, 'compile-failure');
+		assert.equal(result.exitCode, 6);
+		assert.equal(result.recompileAttempts, 1);
+		assert.equal(readFileSync(marker, 'utf8'), 'compile\n');
+		assert.equal(runner.diagnostics.collection.get(vscode.Uri.file(path.join(project, 'Assets/Test.cs')))?.[0].range.start.line, 6);
+	});
+
+	test('bounds connection retries and returns connection failure rather than success', async () => {
+		assert.ok(folder);
+		writeFileSync(path.join(project, 'recompile'), 'require("node:fs").appendFileSync("pipeline-task-count.txt","compile\\n");console.error("Network error");process.exitCode=7;');
+		const result = await runner.request(folder, 'recompile');
+		assert.equal(result.status, 'connection-failure');
+		assert.equal(result.exitCode, 7);
+		assert.equal(result.recompileAttempts, 3);
+		assert.equal(readFileSync(marker, 'utf8'), 'compile\ncompile\ncompile\n');
+		assert.match(result.stderr, /Network error/);
+	});
+
+	test('recovers a transient connection failure and preserves successful CLI output', async () => {
+		assert.ok(folder);
+		writeFileSync(path.join(project, 'recompile'), 'const fs=require("node:fs");const retry=fs.existsSync("pipeline-task-count.txt");fs.appendFileSync("pipeline-task-count.txt","compile\\n");if(!retry){console.error("Network error");process.exitCode=7;}else{console.log("compiled result");console.error("compiler warning output");}');
+		const result = await runner.request(folder, 'recompile');
+		assert.equal(result.status, 'success');
+		assert.equal(result.exitCode, 0);
+		assert.equal(result.recompileAttempts, 2);
+		assert.match(result.stdout, /compiled result/);
+		assert.match(result.stderr, /compiler warning output/);
+	});
+
+	test('defers an unavailable Editor without invoking recompile or clearing Problems', async () => {
+		assert.ok(folder);
+		const uri = vscode.Uri.file(path.join(project, 'Assets/Test.cs'));
+		runner.diagnostics.parse(project, 'Assets/Test.cs(3,1): error CS1002: existing error');
+		writeFileSync(command, 'console.error("Network error");process.exitCode=7;');
+		writeFileSync(path.join(project, 'recompile'), 'require("node:fs").appendFileSync("pipeline-task-count.txt","compile\\n");');
+		const result = await runner.request(folder, 'recompile');
+		assert.equal(result.status, 'deferred');
+		assert.equal(result.exitCode, 7);
+		assert.equal(result.recompileAttempts, 0);
+		assert.equal(existsSync(marker), false);
+		assert.equal(runner.diagnostics.collection.get(uri)?.length, 1);
+	});
+
+	test('does not repeat a successful recompile when its postflight connection fails', async () => {
+		assert.ok(folder);
+		writeFileSync(command, 'if(require("node:fs").existsSync("pipeline-task-count.txt")){console.error("Network error");process.exitCode=7;}else console.log(JSON.stringify({data:{result:{status:"completed"}}}));');
+		writeFileSync(path.join(project, 'recompile'), 'require("node:fs").appendFileSync("pipeline-task-count.txt","compile\\n");console.log("invocation output");');
+		const result = await runner.request(folder, 'recompile');
+		assert.equal(result.status, 'connection-failure');
+		assert.equal(result.stage, 'postflight');
+		assert.equal(result.recompileAttempts, 1);
+		assert.equal(readFileSync(marker, 'utf8'), 'compile\n');
+		assert.match(result.stdout, /invocation output/);
+	});
+
+	test('merges queued recompile kinds and returns the same batch result to every caller', async () => {
+		assert.ok(folder);
+		writeFileSync(path.join(project, 'recompile'), 'require("node:fs").appendFileSync("pipeline-task-count.txt","compile\\n");console.log("coalesced output");');
+		const events: OperationResult[] = [];
+		const subscription = runner.onDidComplete((result) => events.push(result));
+		try {
+			const results = await Promise.all([
+				runner.execute(folder, 'recompile', new Set(['source'])),
+				runner.execute(folder, 'recompile', new Set(['packages'])),
+				runner.execute(folder, 'recompile', new Set(['environment']))
+			]);
+			assert.equal(events.length, 1);
+			assert.equal(results[0], results[1]);
+			assert.equal(results[1], results[2]);
+			assert.equal(results[0].packagesResolved, true);
+			assert.equal(readFileSync(marker, 'utf8'), 'compile\n');
+			assert.match(logs, /package_resolve/);
+			assert.match(logs, /Assets\/Refresh/);
+		} finally { subscription.dispose(); }
+	});
+
+	test('keeps setup as an ordering barrier between queued recompiles', async () => {
+		assert.ok(folder);
+		writeFileSync(path.join(project, 'recompile'), 'require("node:fs").appendFileSync("pipeline-task-count.txt","compile\\n");');
+		await Promise.all([
+			runner.execute(folder, 'recompile'),
+			runner.execute(folder, 'setup'),
+			runner.execute(folder, 'recompile', new Set(['environment']))
+		]);
+		assert.equal(readFileSync(marker, 'utf8'), 'compile\ninstalled\ncompile\n');
+	});
+
+	test('merges a result-returning request into the queued follow-up while a compile is active', async () => {
+		assert.ok(folder);
+		const gate = path.join(storage, 'release-compile');
+		writeFileSync(path.join(project, 'recompile'), `const fs=require("node:fs");const first=!fs.existsSync("pipeline-task-count.txt");fs.appendFileSync("pipeline-task-count.txt","start\\n");console.log("compile started");const finish=()=>fs.appendFileSync("pipeline-task-count.txt","finish\\n");if(first){const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(gate)})){clearInterval(timer);finish();}},20);}else finish();`);
+		let observed: (() => void) | undefined;
+		const started = new Promise<void>((resolve) => { observed = resolve; });
+		const append = output.append.bind(output);
+		output.append = (text) => { append(text); if (text.includes('compile started')) { observed?.(); } };
+		const first = runner.execute(folder, 'recompile');
+		await started;
+		const second = runner.execute(folder, 'recompile', new Set(['source']));
+		runner.waitUntilIdle = async () => { await first; await second; };
+		const third = runner.request(folder, 'recompile', new Set(['environment']));
+		writeFileSync(gate, 'release');
+		const results = await Promise.all([first, second, third]);
+		assert.equal(readFileSync(marker, 'utf8'), 'start\nfinish\nstart\nfinish\n');
+		assert.equal(results[1], results[2]);
+		assert.notEqual(results[0], results[1]);
+	});
+
+	test('records automatic failure only in Output without revealing a panel or notifying', async () => {
+		await runner.processFor(project)(nativeNode, ['-e', 'console.log("ready");'], { timeout: 3000 });
+		const descriptor = Object.getOwnPropertyDescriptor(vscode.window, 'showErrorMessage');
+		assert.ok(descriptor);
+		let notifications = 0;
+		let reveals = 0;
+		Object.defineProperty(vscode.window, 'showErrorMessage', { ...descriptor, value: () => { notifications++; return Promise.resolve(undefined); } });
+		output.show = () => { reveals++; };
+		try {
+			runner.reportFailure('automatic operation', new Error('Network error'), false);
+			assert.equal(notifications, 0);
+			assert.equal(reveals, 0);
+			assert.match(logs, /Network error/);
+			runner.reportFailure('manual operation', new Error('final failure'));
+			assert.equal(notifications, 1);
+			assert.equal(reveals, 0);
+		} finally { Object.defineProperty(vscode.window, 'showErrorMessage', descriptor); }
+	});
+
+	test('returns structured results through the registered manual recompile command', async () => {
+		assert.ok(folder);
+		writeFileSync(path.join(project, 'recompile'), 'console.log("command result");');
+		const extension = vscode.extensions.getExtension<UnityTaskRunner>('kadiace.unity-compile-on-save');
+		assert.ok(extension);
+		await extension.activate();
+		const results = await vscode.commands.executeCommand<OperationResult[]>('unityCompileOnSave.recompile', folder.uri);
+		assert.equal(results.length, 1);
+		assert.equal(results[0].status, 'success');
+		assert.match(results[0].stdout, /command result/);
 	});
 });

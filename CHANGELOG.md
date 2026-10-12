@@ -6,6 +6,13 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.0.10]
+
+- Serialize project recompilation requests and merge queued changes while preserving debounce and Pipeline setup ordering.
+- Retain pending changes while the Editor is unavailable and resume when readiness recovers.
+- Retry connection failures (exit code 7) at most twice, never retry compiler failures (exit code 6), and keep automatic failures in Output without notifications.
+- Return structured operation results with CLI output, exit codes, and execution stages while preserving failure rejection and compiler Problems.
+
 ## [0.0.9]
 
 - Run Unity CLI operations in the background and log stdout/stderr in the Unity CLI Output channel without creating terminals or taking focus.
