@@ -119,6 +119,29 @@ suite('Quiet period', () => {
 		}
 	});
 
+	test('ignores a late idle-wait failure when the project is forgotten', async () => {
+		await config.update('recompileOnSave', true, vscode.ConfigurationTarget.Global);
+		await config.update('recompileOnSourceChanges', true, vscode.ConfigurationTarget.Global);
+		await config.update('quietPeriodSeconds', 0.2, vscode.ConfigurationTarget.Global);
+		let started: (() => void) | undefined;
+		const waiting = new Promise<void>((resolve) => { started = resolve; });
+		let cancel: ((error: Error) => void) | undefined;
+		const idle = new Promise<void>((_, reject) => { cancel = reject; });
+		let calls = 0;
+		const failures: unknown[] = [];
+		const handler = createRecompileHandler(async () => { calls++; }, () => { started?.(); return idle; }, (error) => { failures.push(error); });
+		try {
+			handler.onFileChange(uri);
+			await waiting;
+			handler.forget(project);
+			assert.ok(cancel);
+			cancel(new DOMException('project removed', 'AbortError'));
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(calls, 0);
+			assert.deepEqual(failures, []);
+		} finally { handler.dispose(); }
+	});
+
 	test('runs only one follow-up after changes arrive during its own recompile', async () => {
 		await config.update('recompileOnSave', true, vscode.ConfigurationTarget.Global);
 		await config.update('recompileOnSourceChanges', true, vscode.ConfigurationTarget.Global);

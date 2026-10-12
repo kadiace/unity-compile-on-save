@@ -3,21 +3,24 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import * as vscode from 'vscode';
+import type { UnityTaskRunner } from '../../unityTasks';
 
 const exec = promisify(execFile);
 
 function nextRecompile(): { readonly completed: Promise<void>; readonly dispose: () => void } {
+	const extension = vscode.extensions.getExtension<UnityTaskRunner>('kadiace.unity-compile-on-save');
+	assert.ok(extension?.isActive);
 	let timer: NodeJS.Timeout;
 	let subscription: vscode.Disposable;
 	const completed = new Promise<void>((resolve, reject) => {
-		subscription = vscode.tasks.onDidEndTaskProcess((event) => {
-			if (event.execution.task.definition.type === 'unityCompileOnSave' && event.execution.task.definition.operation === 'recompile') {
+		subscription = extension.exports.onDidComplete((event) => {
+			if (event.operation === 'recompile') {
 				clearTimeout(timer);
 				subscription.dispose();
-				if (event.exitCode === 0) { resolve(); } else { reject(new Error(`Live Unity task failed: ${event.exitCode}`)); }
+				if (event.exitCode === 0) { resolve(); } else { reject(new Error(`Live Unity recompile failed: ${event.exitCode}`)); }
 			}
 		});
-		timer = setTimeout(() => { subscription.dispose(); reject(new Error('Saved C# did not complete a Unity recompile task')); }, 360_000);
+		timer = setTimeout(() => { subscription.dispose(); reject(new Error('Saved C# did not complete a Unity recompile')); }, 360_000);
 	});
 	return { completed, dispose: () => { clearTimeout(timer); subscription.dispose(); } };
 }
@@ -28,11 +31,11 @@ export async function run(): Promise<void> {
 	assert.equal(vscode.workspace.isTrusted, true);
 	const extension = vscode.extensions.getExtension('kadiace.unity-compile-on-save');
 	assert.ok(extension);
-	await vscode.tasks.fetchTasks({ type: 'unityCompileOnSave' });
-	assert.equal(extension.isActive, true, 'Unity-root opening should activate the extension automatically');
-	const tasks = await vscode.tasks.fetchTasks({ type: 'unityCompileOnSave' });
-	assert.equal(tasks.length, 2);
-	console.log('LIVE_QA: Unity-root activation and setup/recompile task discovery succeeded');
+	await extension.activate();
+	const commands = await vscode.commands.getCommands();
+	assert.ok(commands.includes('unityCompileOnSave.setup'));
+	assert.ok(commands.includes('unityCompileOnSave.recompile'));
+	console.log('LIVE_QA: Unity-root activation and setup/recompile command discovery succeeded');
 	const name = `UnityCompileOnSaveQa_${randomUUID().replaceAll('-', '')}`;
 	const file = vscode.Uri.joinPath(folder.uri, 'Assets', 'Editor', `${name}.cs`);
 	const source = (value: number): string => `public static class ${name} { public const int Value = ${value}; }\n`;
@@ -59,7 +62,7 @@ export async function run(): Promise<void> {
 			throw error;
 		});
 		assert.match(stdout, /\b456\b/);
-		console.log(`LIVE_QA: Actual VS Code edit/save completed its task and connected Editor executed updated C# value: ${stdout.trim()}`);
+		console.log(`LIVE_QA: Actual VS Code edit/save completed recompilation and connected Editor executed updated C# value: ${stdout.trim()}`);
 	} finally {
 		first.dispose();
 		await vscode.workspace.fs.delete(file);

@@ -6,6 +6,14 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.0.9]
+
+- Run Unity CLI operations in the background and log stdout/stderr in the Unity CLI Output channel without creating terminals or taking focus.
+- Show C# compiler errors and warnings in Problems and replace each project's diagnostics on recompilation.
+- Offer a Show Log action on failures while preserving Pipeline connection, cancellation, and Editor process lifecycles.
+- Replace setup/recompile task entries with Command Palette commands.
+- Clearly disclose default automatic CLI installation, Pipeline package changes, Editor launch, recompilation, and connection checks, including opt-out settings.
+
 ## [0.0.8]
 
 - Show project-scoped Unity Pipeline recompilation readiness in the VS Code status bar, with periodic connection checks and a reconnect action.

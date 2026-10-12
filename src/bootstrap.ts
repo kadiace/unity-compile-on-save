@@ -1,11 +1,9 @@
-import { execFile } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { get } from 'node:https';
 import { homedir } from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
+import { runProcess } from './cliProcess';
 
-const exec = promisify(execFile);
 const windowsInstaller = 'https://public-cdn.cloud.unity3d.com/hub/prod/cli/install.ps1';
 const unixInstaller = 'https://unity.com/install.sh';
 
@@ -32,13 +30,14 @@ export interface CliProcess {
 	readonly env: NodeJS.ProcessEnv;
 	readonly signal: AbortSignal;
 	readonly timeout: number;
+	readonly log?: (chunk: string, stream: 'stdout' | 'stderr') => void;
 }
 
 export async function runCliProcess(command: CliProcess): Promise<string> {
 	try {
-		const { stdout } = await exec(command.executable, [...command.args], {
+		const { stdout } = await runProcess(command.executable, command.args, {
 			env: command.env, signal: command.signal, timeout: command.timeout,
-			killSignal: 'SIGKILL', windowsHide: true, maxBuffer: 2 * 1024 * 1024
+			killSignal: 'SIGKILL', maxBuffer: 2 * 1024 * 1024, log: command.log
 		});
 		return stdout;
 	} catch (error: unknown) {
@@ -95,6 +94,7 @@ export interface BootstrapDependencies {
 
 export function createUnityCliEnsurer(deps: BootstrapDependencies) {
 	return async (storageRoot: string, log: (message: string) => void, signal: AbortSignal): Promise<string> => {
+		const run = (command: CliProcess): Promise<string> => deps.run({ ...command, log: (chunk) => log(chunk) });
 		signal.throwIfAborted();
 		if (!['win32', 'darwin', 'linux'].includes(deps.platform)) {
 			throw new CliBootstrapError('platform', `Unsupported platform ${deps.platform}`);
@@ -121,7 +121,7 @@ export function createUnityCliEnsurer(deps: BootstrapDependencies) {
 		}
 		for (const executable of new Set(candidates)) {
 			try {
-				const version = await deps.run({ executable, args: ['--version'], env: deps.env, signal, timeout: 10_000 });
+				const version = await run({ executable, args: ['--version'], env: deps.env, signal, timeout: 10_000 });
 				if (supportsCliVersion(version)) {
 					log(`Using Unity CLI ${version.trim()} at ${executable}`);
 					return executable;
@@ -160,9 +160,8 @@ export function createUnityCliEnsurer(deps: BootstrapDependencies) {
 		const args = windows ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script]
 			: ['--noprofile', '--norc', script];
 		try {
-			const output = await deps.run({ executable, args, env, signal, timeout: 180_000 });
-			log(output.trim());
-			const version = await deps.run({ executable: installed, args: ['--version'], env: deps.env, signal, timeout: 10_000 });
+			await run({ executable, args, env, signal, timeout: 180_000 });
+			const version = await run({ executable: installed, args: ['--version'], env: deps.env, signal, timeout: 10_000 });
 			if (!supportsCliVersion(version)) {
 				throw new CliBootstrapError('verification', `Installed version ${version.trim()} does not satisfy 1.0.0-beta.11 or later`);
 			}

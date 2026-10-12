@@ -5,17 +5,20 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import * as vscode from 'vscode';
 import { createRecompileHandler, findUnityProjectRoot } from '../extension';
+import type { UnityTaskRunner } from '../unityTasks';
 
 function nextCompletedRecompile(): Promise<void> {
+	const extension = vscode.extensions.getExtension<UnityTaskRunner>('kadiace.unity-compile-on-save');
+	assert.ok(extension?.isActive);
 	return new Promise<void>((resolve, reject) => {
-		const listener = vscode.tasks.onDidEndTaskProcess((event) => {
-			if (event.execution.task.definition.type === 'unityCompileOnSave' && event.execution.task.definition.operation === 'recompile') {
+		const listener = extension.exports.onDidComplete((event) => {
+			if (event.operation === 'recompile') {
 				clearTimeout(timeout);
 				listener.dispose();
-				if (event.exitCode === 0) { resolve(); } else { reject(new Error('Unity recompile task failed')); }
+				if (event.exitCode === 0) { resolve(); } else { reject(new Error('Unity recompile failed')); }
 			}
 		});
-		const timeout = setTimeout(() => { listener.dispose(); reject(new Error('Unity recompile task did not finish')); }, 8000);
+		const timeout = setTimeout(() => { listener.dispose(); reject(new Error('Unity recompile did not finish')); }, 8000);
 	});
 }
 
@@ -189,7 +192,7 @@ suite('Unity Compile on Save', () => {
 		}
 	});
 
-	test('runs a VS Code Unity task from the project root after a C# save', async () => {
+	test('runs Unity CLI from the project root after a C# save without a terminal', async () => {
 		await config.update('recompileOnSave', false, vscode.ConfigurationTarget.Global);
 		const bin = path.join(root, 'bin');
 		mkdirSync(bin);
@@ -209,6 +212,7 @@ suite('Unity Compile on Save', () => {
 			const extension = vscode.extensions.getExtension('kadiace.unity-compile-on-save');
 			assert.ok(extension);
 			await extension.activate();
+			const terminals = [...vscode.window.terminals];
 			rmSync(path.join(project, 'status-probed.txt'), { force: true });
 			rmSync(path.join(project, 'editor-idle.flag'), { force: true });
 			const completed = nextCompletedRecompile();
@@ -239,6 +243,7 @@ suite('Unity Compile on Save', () => {
 			writeFileSync(path.join(project, 'editor-idle.flag'), 'ready');
 			await observed;
 			await completed;
+			assert.deepEqual(vscode.window.terminals, terminals);
 			const result: unknown = JSON.parse(readFileSync(marker, 'utf8'));
 			assert.ok(result && typeof result === 'object' && 'cwd' in result && 'args' in result);
 			assert.ok(typeof result.cwd === 'string');

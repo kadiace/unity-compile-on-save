@@ -1,9 +1,8 @@
-import { execFile } from 'node:child_process';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import * as vscode from 'vscode';
+import { runProcess } from './cliProcess';
+import type { ProcessRunner } from './cliProcess';
 
-const runCli = promisify(execFile);
 export type Connection = 'connected' | 'busy';
 
 export function parseConnection(stdout: string, projectRoot: string): Connection {
@@ -24,9 +23,9 @@ export function parseConnection(stdout: string, projectRoot: string): Connection
 	}
 }
 
-export async function checkConnection(projectRoot: string, executable: string, signal: AbortSignal): Promise<Connection> {
+export async function checkConnection(projectRoot: string, executable: string, signal: AbortSignal, runCli: ProcessRunner = runProcess): Promise<Connection> {
 	const { stdout } = await runCli(executable, ['command', '--project-path', projectRoot, '--timeout', '5', 'recompile_status', '--json'],
-		{ cwd: projectRoot, windowsHide: true, signal, timeout: 8000, maxBuffer: 1024 * 1024 });
+		{ cwd: projectRoot, signal, timeout: 8000, maxBuffer: 1024 * 1024 });
 	return parseConnection(stdout, projectRoot);
 }
 

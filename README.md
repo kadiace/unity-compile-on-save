@@ -2,6 +2,36 @@
 
 Recompile Unity scripts when source files change in VS Code or on disk. Optionally refresh and recompile when the project environment changes.
 
+## Automatic actions enabled by default
+
+**Installing or enabling this extension while a trusted, local Unity project root is already open can start automatic setup immediately.** Otherwise, setup starts when that root is opened or added to the workspace, when workspace trust is granted, or when automatic setup/recompilation is re-enabled. The default settings enable automatic setup, source-change recompilation, and connection-status checks. The extension does not ask for an additional confirmation before automatic setup.
+
+Automatic actions include:
+
+- **Unity CLI discovery and installation:** run local CLI version checks; if no supported CLI is found, download and run Unity's official installer to install an extension-managed copy in VS Code's extension storage. This requires network access when installation is needed. Existing supported installations are reused; older system installations are not upgraded or replaced.
+- **Project package changes:** run `unity pipeline install --project-path <root> --non-interactive`, which installs Unity Pipeline and modifies the project's Unity package dependencies.
+- **Editor launch and connection:** check running Editors, open the project in its installed Unity Editor if needed, and query Pipeline readiness until the connection is ready. The extension does not install the Unity Editor or accept licenses on your behalf.
+- **Compilation:** watch supported project files and run `unity recompile` after eligible saves or changes on disk, including changes made by Git or other tools. Project-environment triggers are disabled by default; enabling them can also resolve packages and refresh assets before recompilation.
+- **Background CLI queries:** while connection status is enabled, query the selected project's readiness every five seconds and after operations or project-selection changes. These checks are separate from change-triggered recompilation.
+
+These actions target local Unity projects whose root is open as a workspace folder and require workspace trust. Automatic setup additionally requires **Auto Setup** and **Recompile on Save** to be enabled. Logs are available in **Output → Unity CLI**; the extension does not create terminals.
+
+### Choose the automatic behavior before opening a Unity workspace
+
+Set `unityCompileOnSave.autoSetup` to `false` in **User Settings before installing/enabling the extension or opening/trusting a Unity workspace** to prevent automatic CLI provisioning, Pipeline installation, and Editor launch. Automatic recompilation then uses the `unity` command already on your PATH and a Pipeline connection you manage yourself.
+
+To disable all three automatic behaviors, use:
+
+```json
+{
+  "unityCompileOnSave.autoSetup": false,
+  "unityCompileOnSave.recompileOnSave": false,
+  "unityCompileOnSave.showConnectionStatus": false
+}
+```
+
+Disabling **Recompile on Save** also prevents automatic setup, but does not by itself disable connection-status queries. Explicit setup/recompile commands remain available; choosing **Set Up / Reconnect Unity Pipeline** can still install the CLI/Pipeline and open the Editor even when automatic setup is disabled. Restricted Mode and virtual workspaces do not run installation or compilation.
+
 ## Highlights
 
 - Recompile after supported C# and assembly input changes, including changes made by Git checkout, pull, stash pop, or other external tools.
@@ -12,12 +42,27 @@ Recompile Unity scripts when source files change in VS Code or on disk. Optional
 
 1. Install **Unity Compile on Save** from the VS Code Marketplace.
 2. Open the **root folder** of your Unity project in VS Code and trust the workspace.
-3. The extension automatically runs its **Connect Unity Pipeline** VS Code task. It finds a supported Unity CLI or installs an extension-managed copy without administrator privileges. Fresh installations prefer Unity's latest stable release; before a stable release exists, the official installer selects the latest beta. The installed version must be **1.0.0-beta.11 or later**.
-4. The task runs `unity pipeline install --project-path <root>`, opens the project in its installed Unity Editor if it is not already running, and waits for the Pipeline connection. Save a C# file after setup; the **Recompile Unity** task runs automatically after the quiet period.
+3. The extension automatically connects **Unity Pipeline** in the background. It finds a supported Unity CLI or installs an extension-managed copy without administrator privileges. Fresh installations prefer Unity's latest stable release; before a stable release exists, the official installer selects the latest beta. The installed version must be **1.0.0-beta.11 or later**.
+4. Setup runs `unity pipeline install --project-path <root>`, opens the project in its installed Unity Editor if it is not already running, and waits for the Pipeline connection. Save a C# file after setup; recompilation runs automatically after the quiet period.
 
-No `.vscode/tasks.json`, manual CLI installation, or VS Code restart is required. Existing supported CLI installations are reused; older system installations are left untouched. Automatic setup requires internet access for downloads, a compatible installed and licensed **Unity 6+ Editor**, and any Unity sign-in required by your environment. It does not install the Unity Editor, accept licenses, or bypass authentication. Pipeline installation modifies the project's Unity package dependencies.
+No `.vscode/tasks.json` or manual CLI installation is required. First-time setup needs no VS Code restart; updating an already active extension may require **Developer: Reload Window** as described below. Existing supported CLI installations are reused; older system installations are left untouched. Automatic setup requires internet access for downloads, a compatible installed and licensed **Unity 6+ Editor**, and any Unity sign-in required by your environment. It does not install the Unity Editor, accept licenses, or bypass authentication. Pipeline installation modifies the project's Unity package dependencies.
 
-Progress and failures appear in the task terminal and the **Unity Compile on Save** Output channel. To retry setup or reconnect after a failure, run **Unity Compile on Save: Set Up / Reconnect Unity Pipeline** from the Command Palette. Both **Connect Unity Pipeline** and **Recompile Unity** are also available through **Tasks: Run Task**. Source changes received during setup are coalesced and compiled after the Editor becomes ready. Disabling **Recompile on Save** before opening a workspace prevents automatic setup. Restricted Mode and virtual workspaces do not run installation or compilation.
+All Unity CLI commands, including Pipeline setup and connection checks, send stdout/stderr to the **Unity CLI** Output channel. Commands stream logs as they run; the Editor launcher collects its output separately and publishes it on launcher exit so inherited Editor handles remain valid. C# compiler errors and warnings appear in **Problems**, with file paths, line/column locations, and compiler codes. Each recompilation replaces that project's previous diagnostics without clearing other projects' Problems. Readiness checks log their responses but do not republish historical compilation errors. Successful operations do not open a panel; failures offer an error notification with **Show Log**, which reveals Output without taking editor or terminal focus. No extension operation creates a terminal.
+
+To retry setup or reconnect after a failure, run **Unity Compile on Save: Set Up / Reconnect Unity Pipeline** from the Command Palette. To compile manually, run **Unity Compile on Save: Recompile Unity**. These commands replace the previous **Tasks: Run Task** entries so even explicit operations do not create task terminals; remove any old `unityCompileOnSave` entries from `.vscode/tasks.json` and use the commands instead. Source changes received during setup are coalesced and compiled after the Editor becomes ready. Disabling **Recompile on Save** before opening a workspace prevents automatic setup. Restricted Mode and virtual workspaces do not run installation or compilation.
+
+### Updating from task-based versions
+
+Version **0.0.8 and earlier** run recompilation as a VS Code task. They create a **Recompile Unity** terminal and reveal it on failure. Version **0.0.9** runs CLI processes directly and uses **Output → Unity CLI** instead. Generating or downloading a VSIX does not install it.
+
+If Git checkout/pull or a save still creates a recompile terminal, check the installed version in the affected VS Code profile:
+
+```powershell
+code --list-extensions --show-versions
+code --install-extension "C:\path\to\unity-compile-on-save-0.0.9.vsix" --force
+```
+
+Verify `kadiace.unity-compile-on-save@0.0.9`, then run **Developer: Reload Window** in each already-open Unity workspace window to replace its old extension host. If using a named VS Code profile, pass `--profile "Profile Name"` to the commands above. Close any old task terminal yourself and remove obsolete `unityCompileOnSave` task entries from `.vscode/tasks.json`; the new runner does not use them. A failed compile on 0.0.9 should leave the existing terminal active and show a notification with **Show Log** plus compiler diagnostics in **Problems**.
 
 ### Manual setup / troubleshooting
 
@@ -45,13 +90,15 @@ The following commands are still useful when diagnosing an existing installation
 
 ## Usage
 
-The bottom status bar shows **Unity: Connected** only when Unity CLI can query recompilation readiness through the currently selected project's Pipeline. **Busy** means Pipeline responds but compilation is in progress; **Disconnected** means readiness could not be confirmed. It checks every five seconds and after task completion or project selection changes. Hover to see the exact project path, or click to set up/reconnect that project. In multi-root workspaces the active editor selects the project; outside a Unity project the item is hidden. Disable `unityCompileOnSave.showConnectionStatus` to hide it.
+The bottom status bar shows **Unity: Connected** only when Unity CLI can query recompilation readiness through the currently selected project's Pipeline. **Busy** means Pipeline responds but compilation is in progress; **Disconnected** means readiness could not be confirmed. It checks every five seconds and after operation completion or project selection changes. Hover to see the exact project path, or click to set up/reconnect that project. In multi-root workspaces the active editor selects the project; outside a Unity project the item is hidden. Disable `unityCompileOnSave.showConnectionStatus` to hide it.
 
-The extension contributes four settings under **Unity Compile on Save**:
+The extension contributes the following settings under **Unity Compile on Save**:
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| **Recompile on Save** (`unityCompileOnSave.recompileOnSave`) | `true` | Master switch. Turning it off disables both triggers below. |
+| **Auto Setup** (`unityCompileOnSave.autoSetup`) | `true` | Automatically provision Unity CLI, install Pipeline into the project, and open/connect the installed Editor when Recompile on Save is enabled. Explicit setup remains available when disabled. |
+| **Show Connection Status** (`unityCompileOnSave.showConnectionStatus`) | `true` | Show status and run background CLI readiness queries every five seconds. Independent of the recompilation master switch. |
+| **Recompile on Save** (`unityCompileOnSave.recompileOnSave`) | `true` | Master switch for both change triggers and automatic setup. Does not disable connection-status queries or explicit commands. |
 | **Recompile on Source Changes** (`unityCompileOnSave.recompileOnSourceChanges`) | `true` | Recompile after source or assembly input changes. |
 | **Recompile on Project Environment Changes** (`unityCompileOnSave.recompileOnProjectEnvironmentChanges`) | `false` | Resolve packages when needed, refresh assets, then recompile after environment changes. |
 | **Quiet Period Seconds** (`unityCompileOnSave.quietPeriodSeconds`) | `2` | Once a recompilation is pending, wait for this many seconds without any file change under `Assets/`, `Packages/`, or `ProjectSettings/` (0.2–60 seconds). |
@@ -67,6 +114,29 @@ For example, to enable project environment changes, add this to your VS Code `se
 Source changes include creating, modifying, or deleting `.cs`, `.asmdef`, `.asmref`, `Assets/csc.rsp`, managed `.dll` files, and their `.dll.meta` files under `Assets/` or in-project `Packages/`. Project environment changes include `Packages/manifest.json`, `Packages/packages-lock.json`, in-project package `package.json` files, `ProjectSettings/ProjectSettings.asset`, and `.asset` files in `Assets/**/Build Profiles/`. Package changes invoke Unity Pipeline's `package_resolve` before `Assets/Refresh` and the explicit `unity recompile` command. Other environment changes invoke `Assets/Refresh` before recompilation. Unity can also compile scripts as part of package resolution itself.
 
 Only local files in a Unity project (identified by `ProjectSettings/ProjectVersion.txt`) **whose root is open as a VS Code workspace folder** are handled. Opening only a subfolder or changing a file outside the open project does not trigger recompilation. Source and environment changes share one project-level quiet period. After an eligible change requests recompilation, **any file creation, modification, or deletion in `Assets/`, `Packages/`, or `ProjectSettings/` restarts the timer**, even when that file is not a compile trigger itself (for example, a texture). Such unrelated file changes alone never request recompilation. Changes under generated folders such as `Library/` and `Temp/` do not extend the wait. After the project stays unchanged for 2 seconds by default, the extension checks Unity Pipeline's `recompile_status` and waits if the Editor reports a compilation in progress. Changes received during that wait are merged into **one explicit recompile** after the Editor becomes idle. Changes arriving during a recompile initiated by this extension are also merged into one later request. A checkout followed by a pull is combined if the gap between watched changes is shorter than the configured quiet period; increase the setting if your workflow pauses longer. In a multi-root workspace, each Unity project is handled separately and targeted with `--project-path`. An explicitly configured legacy `unityCompileOnSave.compileUnityOnSave` value remains effective until **Recompile on Save** is configured.
+
+### Git changes and scene reload
+
+Script recompilation, asset import/refresh, and reopening an already-open scene are different operations. **This extension does not automatically reload `.unity` scenes after Git checkout/pull.** Scene-only changes do not request a compile; a scene change received alongside a source change extends the quiet period but does not add a scene-reload step. The existing environment/package path invokes `Assets/Refresh`, which is not a guarantee that the open scene is reloaded from disk.
+
+Unity CLI **1.0.0-beta.11** with Pipeline **0.8.0-exp.1** exposes `list_open_scenes` and `open_scene`; `eval` can also call `UnityEditor.SceneManagement.EditorSceneManager.OpenScene`. A guarded `eval` was verified to reopen a clean, saved, single scene in idle Edit Mode. Before reloading, inspect **every** open scene's dirty state. Do not automatically save old in-memory scenes after a checkout: that can overwrite the newly checked-out files. Refuse automatic reload when there are unsaved changes, an unsaved scene, Play Mode, or an active Prefab Stage.
+
+For a deliberately chosen **single-scene** workflow:
+
+```powershell
+$project = "C:\path\to\UnityProject"
+unity command --project-path $project list_open_scenes --result-only
+unity command --project-path $project menu "Assets/Refresh"
+unity command --project-path $project recompile_status --json
+```
+
+Refresh may itself trigger compilation/domain reload. Wait until readiness reports `idle`, `completed`, or `up_to_date`, then recheck `list_open_scenes`. Only after confirming a clean, saved scene in idle Edit Mode, reopen its on-disk path:
+
+```powershell
+unity command --project-path $project open_scene --path "Assets/Scenes/Main.unity"
+```
+
+`open_scene` defaults to non-additive opening and replaces the open scene setup. Do not use it blindly for multi-scene editing or dirty scenes. For automated use, perform the state checks and reopen in one Editor-side operation so state cannot change between the safety check and the reload. Scene reload does not fix genuine C# compilation errors; review those separately in **Problems** and **Unity CLI** logs.
 
 ## License
 

@@ -1,10 +1,10 @@
 {
   "name": "unity-compile-on-save",
   "displayName": "Unity Compile on Save",
-  "description": "Automatically install Unity CLI, connect Unity Pipeline, and recompile Unity scripts after saves or Git changes using VS Code tasks.",
+  "description": "By default, automatically set up Unity CLI/Pipeline, launch an installed Editor, and recompile scripts in trusted Unity workspaces. Includes CLI logs and C# Problems.",
   "publisher": "kadiace",
   "license": "MIT",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "engines": {
     "vscode": "^1.138.0"
   },
@@ -19,12 +19,10 @@
   },
   "main": "./out/extension.js",
   "contributes": {
-    "commands": [{ "command": "unityCompileOnSave.setup", "title": "Unity Compile on Save: Set Up / Reconnect Unity Pipeline" }],
-    "taskDefinitions": [{
-      "type": "unityCompileOnSave",
-      "required": ["operation"],
-      "properties": { "operation": { "type": "string", "enum": ["setup", "recompile"], "description": "Connect Unity Pipeline or recompile scripts." } }
-    }],
+    "commands": [
+      { "command": "unityCompileOnSave.setup", "title": "Unity Compile on Save: Set Up / Reconnect Unity Pipeline" },
+      { "command": "unityCompileOnSave.recompile", "title": "Unity Compile on Save: Recompile Unity" }
+    ],
     "configuration": {
       "title": "Unity Compile on Save",
       "properties": {
@@ -32,21 +30,21 @@
           "type": "boolean",
           "default": true,
           "scope": "resource",
-          "description": "Show whether Unity CLI can recompile through the current project's Pipeline in the VS Code status bar."
+          "description": "Show Pipeline connection status and run background Unity CLI readiness queries every five seconds. Independent of Recompile on Save; disable this setting to stop status queries."
         },
         "unityCompileOnSave.autoSetup": {
           "type": "boolean",
           "default": true,
           "scope": "resource",
           "order": 0,
-          "description": "Automatically install a supported Unity CLI, install Unity Pipeline, and open the project in its installed Editor. Disable to use a CLI and Pipeline you manage yourself; explicit setup tasks remain available."
+          "description": "Enabled by default in trusted Unity-root workspaces when Recompile on Save is enabled: download/run Unity's installer if a supported CLI is missing, install Pipeline (modifying project package dependencies), and open the installed Editor if needed. Disable before opening/trusting the workspace to manage setup yourself; explicit setup still performs these actions."
         },
         "unityCompileOnSave.recompileOnSave": {
           "type": "boolean",
           "default": true,
           "scope": "resource",
           "order": 1,
-          "description": "Master switch for recompilation triggered by source or project environment changes."
+          "description": "Master switch for change-triggered recompilation and automatic CLI/Pipeline setup. Turning this off does not stop connection-status queries or explicit setup/recompile commands."
         },
         "unityCompileOnSave.recompileOnSourceChanges": {
           "type": "boolean",

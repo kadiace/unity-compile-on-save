@@ -1,15 +1,14 @@
-import { execFile, spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import * as vscode from 'vscode';
 import { ensureUnityCli } from './bootstrap';
 import type { Change } from './extension';
 import { runRecompile, waitUntilEditorIdle } from './unityCli';
+import { runProcess } from './cliProcess';
+import type { ProcessRunner } from './cliProcess';
+import { CompilerDiagnostics } from './compilerDiagnostics';
 
-const runCli = promisify(execFile);
-const taskType = 'unityCompileOnSave';
 type Operation = 'setup' | 'recompile';
+export type OperationResult = { readonly projectRoot: string; readonly operation: Operation; readonly exitCode: number };
 type ProjectState = {
 	readonly controller: AbortController;
 	tail: Promise<void>;
@@ -22,12 +21,65 @@ export class UnityTaskRunner implements vscode.Disposable {
 	private readonly controllers = new Set<AbortController>();
 	private readonly lifetime = new AbortController();
 	private cli: Promise<string> | undefined;
+	private readonly changed = new vscode.EventEmitter<OperationResult>();
+	readonly onDidComplete = this.changed.event;
+	readonly diagnostics = new CompilerDiagnostics();
 
 	constructor(
 		private readonly storageRoot: string,
 		private readonly output: vscode.OutputChannel,
 		private readonly provision = ensureUnityCli
 	) {}
+
+	reportFailure(message: string, error: unknown): void {
+		if (this.lifetime.signal.aborted) { return; }
+		let cause = error;
+		while (cause instanceof Error) {
+			if (cause.name === 'AbortError') { return; }
+			cause = cause.cause;
+		}
+		const detail = error instanceof Error ? error.message : String(error);
+		this.output.appendLine(`${message}: ${detail}`);
+		void vscode.window.showErrorMessage(`${message}: ${detail}`, 'Show Log')
+			.then((choice) => { if (choice === 'Show Log') { this.output.show(true); } });
+	}
+
+	processFor(projectRoot: string): ProcessRunner {
+		const state = this.projects.get(vscode.Uri.file(projectRoot).toString());
+		return async (executable, args, options) => {
+			const collectDiagnostics = !args.includes('recompile_status');
+			this.output.appendLine(`[${projectRoot}] ${executable} ${args.join(' ')}`);
+			const buffers = { stdout: '', stderr: '' };
+			const pending = { stdout: '', stderr: '' };
+			const parse = (text: string): void => {
+				if (!collectDiagnostics || this.lifetime.signal.aborted || state?.controller.signal.aborted) { return; }
+				if (/^\s*[\[{]/.test(text)) { this.diagnostics.parseJson(projectRoot, text); }
+				else { this.diagnostics.parse(projectRoot, text); }
+			};
+			try {
+				return await runProcess(executable, args, { ...options, log: (chunk, stream) => {
+					if (this.lifetime.signal.aborted) { return; }
+					this.output.append(chunk);
+					buffers[stream] += chunk;
+					pending[stream] += chunk;
+					const lines = pending[stream].split(/\r?\n/);
+					pending[stream] = lines.pop() ?? '';
+					for (const line of lines) { parse(line); }
+				} });
+			} catch (error: unknown) {
+				if (!this.lifetime.signal.aborted) { this.output.appendLine(error instanceof Error ? error.message : String(error)); }
+				throw error;
+			} finally {
+				for (const stream of ['stdout', 'stderr'] as const) {
+					parse(pending[stream]);
+					if (collectDiagnostics && !this.lifetime.signal.aborted && !state?.controller.signal.aborted) {
+						this.diagnostics.parseJson(projectRoot, buffers[stream]);
+					}
+				}
+				if (!this.lifetime.signal.aborted) { this.output.appendLine(''); }
+			}
+		};
+	}
 
 	async connectionExecutable(folder: vscode.WorkspaceFolder): Promise<string> {
 		if (!vscode.workspace.getConfiguration('unityCompileOnSave', folder.uri).get<boolean>('autoSetup', true)) { return 'unity'; }
@@ -45,11 +97,10 @@ export class UnityTaskRunner implements vscode.Disposable {
 		const executable = await this.cli;
 		signal.throwIfAborted();
 		const projectRoot = folder.uri.fsPath;
-		const options = { cwd: projectRoot, windowsHide: true, signal, timeout: 180_000, maxBuffer: 4 * 1024 * 1024 };
+		const runCli = this.processFor(projectRoot);
+		const options = { cwd: projectRoot, signal, timeout: 180_000, maxBuffer: 4 * 1024 * 1024 };
 		log(`Installing/checking Unity Pipeline in ${projectRoot}`);
-		const installed = await runCli(executable, ['pipeline', 'install', '--project-path', projectRoot, '--non-interactive'], options);
-		log(installed.stdout);
-		log(installed.stderr);
+		await runCli(executable, ['pipeline', 'install', '--project-path', projectRoot, '--non-interactive'], options);
 		const { stdout } = await runCli(executable, ['pipeline', 'list', '--json'], options);
 		const response: unknown = JSON.parse(stdout);
 		if (!response || typeof response !== 'object' || !('data' in response) || !response.data ||
@@ -62,18 +113,10 @@ export class UnityTaskRunner implements vscode.Disposable {
 			'pid' in instance && typeof instance.pid === 'number' && instance.pid > 0);
 		if (!running) {
 			log('Opening this project in its installed Unity Editor to connect Pipeline.');
-			// The Editor can inherit CLI output handles. Do not wait for its lifetime to close those pipes.
-			await new Promise<void>((resolve, reject) => {
-				const child = spawn(executable, ['open', projectRoot, '--non-interactive'],
-					{ cwd: projectRoot, windowsHide: true, signal, timeout: 180_000, stdio: 'ignore' });
-				child.once('error', reject);
-				child.once('exit', (code) => {
-					if (code === 0) { resolve(); } else { reject(new Error(`Unity CLI could not open this project's Editor (exit ${code}).`)); }
-				});
-			});
+			await runCli(executable, ['open', projectRoot, '--non-interactive'], { ...options, finishOnExit: true });
 		}
 		log('Waiting for the Unity Editor to finish loading Pipeline and compiling scripts...');
-		await waitUntilEditorIdle(projectRoot, executable, signal);
+		await waitUntilEditorIdle(projectRoot, executable, signal, runCli);
 		log('Unity Pipeline connected. Compile on Save is ready.');
 		return executable;
 	}
@@ -94,6 +137,7 @@ export class UnityTaskRunner implements vscode.Disposable {
 		const signal = AbortSignal.any([taskSignal, state.controller.signal, this.lifetime.signal]);
 		const work = state.tail.then(async () => {
 			signal.throwIfAborted();
+			if (operation === 'recompile') { this.diagnostics.clear(folder.uri.fsPath); }
 			if (operation === 'recompile' && !vscode.workspace.getConfiguration('unityCompileOnSave', folder.uri).get<boolean>('autoSetup', true)) {
 				state.ready = 'unity';
 			} else if (operation === 'setup' || !state.ready) {
@@ -102,7 +146,7 @@ export class UnityTaskRunner implements vscode.Disposable {
 			}
 			if (operation === 'recompile') {
 				log(`Running unity recompile --project-path ${folder.uri.fsPath}`);
-				await runRecompile(folder.uri.fsPath, kinds, state.ready, signal);
+				await runRecompile(folder.uri.fsPath, kinds, state.ready, signal, this.processFor(folder.uri.fsPath));
 				log('Unity recompilation completed.');
 			}
 		});
@@ -110,86 +154,37 @@ export class UnityTaskRunner implements vscode.Disposable {
 		await work;
 	}
 
-	createTask(folder: vscode.WorkspaceFolder, operation: Operation, kinds: ReadonlySet<Change> = new Set(['source']),
-		definition: vscode.TaskDefinition = { type: taskType, operation }, completed?: (code: number) => void): vscode.Task {
-		const task = new vscode.Task(definition, folder, operation === 'setup' ? 'Connect Unity Pipeline' : 'Recompile Unity',
-			'Unity Compile on Save', new vscode.CustomExecution(async () => {
-				const write = new vscode.EventEmitter<string>();
-				const close = new vscode.EventEmitter<number>();
-				const controller = new AbortController();
-				this.controllers.add(controller);
-				let finished = false;
-				const log = (message: string): void => {
-					if (!finished && !this.lifetime.signal.aborted && message.trim()) {
-						this.output.appendLine(`[${folder.name}] ${message.trim()}`);
-						write.fire(`${message.trim().replace(/\r?\n/g, '\r\n')}\r\n`);
-					}
-				};
-				const finish = (code: number): void => {
-					if (!finished) {
-						finished = true;
-						this.controllers.delete(controller);
-						completed?.(code);
-						close.fire(code);
-						write.dispose();
-						close.dispose();
-					}
-				};
-				return {
-					onDidWrite: write.event,
-					onDidClose: close.event,
-					open: () => {
-						void this.perform(folder, operation, kinds, log, controller.signal).then(() => finish(0)).catch((error: unknown) => {
-							log(error instanceof Error ? error.message : String(error));
-							if (error instanceof Error && 'stdout' in error && typeof error.stdout === 'string') { log(error.stdout); }
-							if (error instanceof Error && 'stderr' in error && typeof error.stderr === 'string') { log(error.stderr); }
-							finish(1);
-						});
-					},
-					close: () => {
-						controller.abort();
-						finish(1);
-					}
-				};
-			}));
-		task.presentationOptions = { reveal: vscode.TaskRevealKind.Silent, panel: vscode.TaskPanelKind.Dedicated, clear: true };
-		return task;
-	}
-
 	async execute(folder: vscode.WorkspaceFolder, operation: Operation, kinds?: ReadonlySet<Change>): Promise<void> {
 		if (operation === 'setup') {
 			const root = folder.uri.toString();
 			const pending = this.setupTasks.get(root);
 			if (pending) { return pending; }
-			const work = this.executeTask(folder, operation, kinds);
+			const work = this.executeOperation(folder, operation, kinds);
 			this.setupTasks.set(root, work);
 			try { await work; } finally {
 				if (this.setupTasks.get(root) === work) { this.setupTasks.delete(root); }
 			}
 			return;
 		}
-		await this.executeTask(folder, operation, kinds);
+		await this.executeOperation(folder, operation, kinds);
 	}
 
-	private async executeTask(folder: vscode.WorkspaceFolder, operation: Operation, kinds?: ReadonlySet<Change>): Promise<void> {
-		const id = randomUUID();
-		let exitCode: number | undefined;
-		const task = this.createTask(folder, operation, kinds, { type: taskType, operation, id }, (code) => { exitCode = code; });
-		let resolveEnded: (() => void) | undefined;
-		const ended = new Promise<void>((resolve) => { resolveEnded = resolve; });
-		const taskListener = vscode.tasks.onDidEndTask((event) => {
-			if (event.execution.task.definition.id === id) {
-				resolveEnded?.();
-			}
-		});
+	private async executeOperation(folder: vscode.WorkspaceFolder, operation: Operation, kinds: ReadonlySet<Change> = new Set(['source'])): Promise<void> {
+		const controller = new AbortController();
+		this.controllers.add(controller);
+		let exitCode = 1;
+		const log = (message: string): void => {
+			if (!this.lifetime.signal.aborted && message.trim()) { this.output.appendLine(`[${folder.name}] ${message.trim()}`); }
+		};
 		try {
-			await vscode.tasks.executeTask(task);
-			await ended;
-			if (exitCode !== 0) {
-				throw new Error('Unity task failed or was cancelled. See the Unity Compile on Save output or task terminal for details.');
-			}
+			await this.perform(folder, operation, kinds, log, controller.signal);
+			exitCode = 0;
+		} catch (error: unknown) {
+			log(error instanceof Error ? error.message : String(error));
+			throw error;
 		} finally {
-			taskListener.dispose();
+			this.controllers.delete(controller);
+			this.changed.fire({ projectRoot: folder.uri.fsPath, operation, exitCode });
 		}
 	}
 
@@ -199,12 +194,13 @@ export class UnityTaskRunner implements vscode.Disposable {
 		previous?.controller.abort();
 		this.projects.set(root, { controller: new AbortController(), tail: previous?.tail ?? Promise.resolve() });
 		this.setupTasks.delete(root);
+		this.diagnostics.clear(folder.uri.fsPath);
 	}
 
 	async waitUntilIdle(folder: vscode.WorkspaceFolder): Promise<void> {
 		if (!vscode.workspace.getConfiguration('unityCompileOnSave', folder.uri).get<boolean>('autoSetup', true)) {
 			await waitUntilEditorIdle(folder.uri.fsPath, 'unity',
-				AbortSignal.any([this.stateFor(folder).controller.signal, this.lifetime.signal]));
+				AbortSignal.any([this.stateFor(folder).controller.signal, this.lifetime.signal]), this.processFor(folder.uri.fsPath));
 			return;
 		}
 		const pending = this.setupTasks.get(folder.uri.toString());
@@ -221,9 +217,9 @@ export class UnityTaskRunner implements vscode.Disposable {
 		this.controllers.add(controller);
 		try {
 			await waitUntilEditorIdle(folder.uri.fsPath, executable,
-				AbortSignal.any([controller.signal, state.controller.signal, this.lifetime.signal]));
+				AbortSignal.any([controller.signal, state.controller.signal, this.lifetime.signal]), this.processFor(folder.uri.fsPath));
 		} catch (error: unknown) {
-			this.forget(folder);
+			if (this.projects.get(folder.uri.toString()) === state) { this.forget(folder); }
 			throw error;
 		} finally {
 			this.controllers.delete(controller);
@@ -236,5 +232,7 @@ export class UnityTaskRunner implements vscode.Disposable {
 			controller.abort();
 		}
 		this.projects.clear();
+		this.diagnostics.dispose();
+		this.changed.dispose();
 	}
 }
