@@ -6,6 +6,7 @@ import { runProcess } from './cliProcess';
 
 const windowsInstaller = 'https://public-cdn.cloud.unity3d.com/hub/prod/cli/install.ps1';
 const unixInstaller = 'https://unity.com/install.sh';
+const defaultCliVersion = '1.0.0-beta.13';
 
 export class CliBootstrapError extends Error {
 	readonly name = 'CliBootstrapError';
@@ -21,7 +22,7 @@ export function supportsCliVersion(output: string): boolean {
 	if (prerelease && !/^(?:beta\.(0|[1-9]\d*)|rc\.(0|[1-9]\d*))$/.test(prerelease)) { return false; }
 	if (Number(major) !== 1) { return Number(major) > 1; }
 	if (Number(minor) > 0 || Number(patch) > 0 || prerelease === undefined) { return true; }
-	return prerelease.startsWith('rc.') || Number(prerelease.slice(5)) >= 11;
+	return prerelease.startsWith('rc.') || Number(prerelease.slice(5)) >= 13;
 }
 
 export interface CliProcess {
@@ -132,7 +133,7 @@ export function createUnityCliEnsurer(deps: BootstrapDependencies) {
 				log(`Cannot use Unity CLI at ${executable}: ${error.message}`);
 			}
 		}
-		log('Installing an extension-private Unity CLI (stable preferred, beta fallback).');
+		log(`Installing extension-private Unity CLI ${defaultCliVersion}.`);
 		await mkdir(root, { recursive: true });
 		let source = await deps.download(windows ? windowsInstaller : unixInstaller, signal);
 		if (windows) {
@@ -147,7 +148,7 @@ export function createUnityCliEnsurer(deps: BootstrapDependencies) {
 		await writeFile(script, source, { encoding: 'utf8', mode: 0o600 });
 		const privateHome = paths.join(root, 'installer-home');
 		await mkdir(privateHome, { recursive: true });
-		const env: NodeJS.ProcessEnv = { ...deps.env, UNITY_CLI_HOME: root, UNITY_CLI_CHANNEL: '', UNITY_CLI_VERSION: '',
+		const env: NodeJS.ProcessEnv = { ...deps.env, UNITY_CLI_HOME: root, UNITY_CLI_CHANNEL: '', UNITY_CLI_VERSION: defaultCliVersion,
 			UNITY_CLI_CDN_BASE: 'https://public-cdn.cloud.unity3d.com/hub/prod/cli/',
 			HOME: privateHome, ZDOTDIR: privateHome, XDG_CONFIG_HOME: paths.join(privateHome, '.config'),
 			BASH_ENV: '', ENV: '', NO_COLOR: '1' };
@@ -157,13 +158,13 @@ export function createUnityCliEnsurer(deps: BootstrapDependencies) {
 		const executable = windows
 			? paths.join(deps.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 			: '/bin/bash';
-		const args = windows ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script]
+		const args = windows ? ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', script, '-Target', defaultCliVersion]
 			: ['--noprofile', '--norc', script];
 		try {
 			await run({ executable, args, env, signal, timeout: 180_000 });
 			const version = await run({ executable: installed, args: ['--version'], env: deps.env, signal, timeout: 10_000 });
 			if (!supportsCliVersion(version)) {
-				throw new CliBootstrapError('verification', `Installed version ${version.trim()} does not satisfy 1.0.0-beta.11 or later`);
+				throw new CliBootstrapError('verification', `Installed version ${version.trim()} does not satisfy ${defaultCliVersion} or later`);
 			}
 			log(`Installed Unity CLI ${version.trim()} at ${installed}`);
 			return installed;

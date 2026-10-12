@@ -6,15 +6,15 @@ import { CliBootstrapError, createUnityCliEnsurer, downloadInstaller, runCliProc
 import type { BootstrapDependencies, CliProcess } from '../bootstrap';
 
 suite('Unity CLI bootstrap', () => {
-	for (const version of ['1.0.0-beta.11', '1.0.0-beta.13', '1.0.0-beta.100', '1.0.0-rc.1',
-		'1.0.0', '1.1.0', '2.0.0', 'Unity CLI 1.0.0-beta.11', 'v1.0.0-beta.11+build.7']) {
+	for (const version of ['1.0.0-beta.13', '1.0.0-beta.100', '1.0.0-rc.1',
+		'1.0.0', '1.1.0', '2.0.0', 'Unity CLI 1.0.0-beta.13', 'v1.0.0-beta.13+build.7']) {
 		test(`accepts supported version when output is ${version}`, () => {
 			const output = `${version}\n`;
 			const supported = supportsCliVersion(output);
 			assert.equal(supported, true);
 		});
 	}
-	for (const version of ['1.0.0-beta.2', '1.0.0-beta.10', '1.0.0-alpha.99', '2.0.0-alpha.1',
+	for (const version of ['1.0.0-beta.2', '1.0.0-beta.10', '1.0.0-beta.11', '1.0.0-beta.12', '1.0.0-alpha.99', '2.0.0-alpha.1',
 		'0.9.9', '1.0.0-beta.011', '1.0.0-beta.11.extra', '01.0.0', '1.0', 'Unity Editor 6000.0.11f1', 'garbage']) {
 		test(`rejects unsupported version when output is ${version}`, () => {
 			const supported = supportsCliVersion(version);
@@ -59,7 +59,7 @@ suite('Unity CLI bootstrap', () => {
 
 	test('reuses a valid PATH binary when private CLI is missing', async () => {
 		const executable = path.join(storage, 'existing', binary);
-		versions.set(executable, '1.0.0-beta.11');
+		versions.set(executable, '1.0.0-beta.13');
 		const ensure = createUnityCliEnsurer({ ...dependencies, env: { PATH: path.dirname(executable) } });
 		const result = await ensure(storage, ignoreLog, signal());
 		assert.equal(result, executable);
@@ -71,14 +71,14 @@ suite('Unity CLI bootstrap', () => {
 		const known = process.platform === 'win32'
 			? path.join(storage, 'local', 'Unity', 'bin', binary) : path.join(storage, '.local', 'bin', binary);
 		versions.set(old, '1.0.0-beta.2');
-		versions.set(known, '1.0.0-beta.11');
+		versions.set(known, '1.0.0-beta.13');
 		const ensure = createUnityCliEnsurer({ ...dependencies, env: { ...dependencies.env, PATH: path.dirname(old) } });
 		const result = await ensure(storage, ignoreLog, signal());
 		assert.equal(result, known);
 		assert.equal(downloaded, 0);
 	});
 
-	test('installs privately with stable preference when every candidate is missing or old', async () => {
+	test('installs the default release privately when every candidate is missing or old', async () => {
 		const ensure = createUnityCliEnsurer({ ...dependencies,
 			env: { ...dependencies.env, UNITY_CLI_CHANNEL: 'alpha', UNITY_CLI_VERSION: '0.1.0' } });
 		const result = await ensure(storage, ignoreLog, signal());
@@ -86,7 +86,10 @@ suite('Unity CLI bootstrap', () => {
 		const installation = commands.find((command) => !command.args.includes('--version'));
 		assert.ok(installation);
 		assert.equal(installation.env.UNITY_CLI_CHANNEL, '');
-		assert.equal(installation.env.UNITY_CLI_VERSION, '');
+		assert.equal(installation.env.UNITY_CLI_VERSION, '1.0.0-beta.13');
+		if (process.platform === 'win32') {
+			assert.deepEqual(installation.args.slice(-2), ['-Target', '1.0.0-beta.13']);
+		}
 		assert.equal(installation.env.UNITY_CLI_HOME, path.join(storage, 'unity-cli'));
 		assert.equal(installation.env.HOME, path.join(storage, 'unity-cli', 'installer-home'));
 		assert.equal(installation.env.ZDOTDIR, installation.env.HOME);

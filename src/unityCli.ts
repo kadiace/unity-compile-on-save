@@ -6,6 +6,53 @@ import type { ProcessResult, ProcessRunner } from './cliProcess';
 export type RecompileStage = 'package' | 'preflight' | 'invoke' | 'postflight';
 export class EditorNotReadyError extends Error {}
 
+export async function isBlockedByDialog(projectRoot: string, executable: string, signal: AbortSignal | undefined,
+	runCli: ProcessRunner, log: (message: string) => void = () => {}): Promise<boolean> {
+	let stdout: string;
+	try {
+		({ stdout } = await runCli(executable, ['status', '--project-path', projectRoot, '--format', 'json'],
+			{ cwd: projectRoot, signal, timeout: 10_000 }));
+	} catch (error: unknown) {
+		signal?.throwIfAborted();
+		stdout = processFailure(error).stdout;
+	}
+	try {
+		const response: unknown = JSON.parse(stdout);
+		if (!response || typeof response !== 'object') { throw new Error('Invalid status response'); }
+		let blocked = false;
+		const details: string[] = [];
+		const visit = (value: unknown): void => {
+			if (!value || typeof value !== 'object') { return; }
+			if ('code' in value && value.code === 'STATUS_BLOCKED_BY_DIALOG') {
+				blocked = true;
+				if ('message' in value && typeof value.message === 'string') { details.push(value.message); }
+			}
+			if ('blockedBy' in value && value.blockedBy && typeof value.blockedBy === 'object') {
+				const cause = value.blockedBy;
+				if ('dialogs' in cause && Array.isArray(cause.dialogs) && cause.dialogs.length > 0) {
+					blocked = true;
+					if ('reason' in cause && typeof cause.reason === 'string') { details.push(cause.reason); }
+					for (const dialog of cause.dialogs) {
+						if (dialog && typeof dialog === 'object' && 'title' in dialog && typeof dialog.title === 'string') {
+							details.push(`${'level' in dialog ? String(dialog.level) : 'dialog'}: ${dialog.title}`);
+						}
+					}
+				}
+			}
+			Object.values(value).forEach(visit);
+		};
+		visit(response);
+		if (blocked) { log(`Recompile skipped: STATUS_BLOCKED_BY_DIALOG. ${details.join('; ')}`); }
+		else if ('success' in response && response.success === false) {
+			log('Unity status query failed; continuing existing Recompile flow.');
+		}
+		return blocked;
+	} catch (error: unknown) {
+		log(`Unity status unavailable; continuing existing Recompile flow: ${error instanceof Error ? error.message : String(error)}`);
+		return false;
+	}
+}
+
 export class RecompileError extends Error {
 	readonly stdout: string;
 	readonly stderr: string;
@@ -17,10 +64,11 @@ export class RecompileError extends Error {
 	}
 }
 
-export async function waitUntilEditorIdle(projectRoot: string, executable = 'unity', signal?: AbortSignal, runCli: ProcessRunner = runProcess, waitForConnection = true): Promise<void> {
+export async function waitUntilEditorIdle(projectRoot: string, executable = 'unity', signal?: AbortSignal, runCli: ProcessRunner = runProcess, waitForConnection = true, log: (message: string) => void = () => {}): Promise<void> {
 	const deadline = Date.now() + 300_000;
 	while (true) {
 		signal?.throwIfAborted();
+		if (await isBlockedByDialog(projectRoot, executable, signal, runCli, log)) { return; }
 		let stdout: string;
 		try {
 			({ stdout } = await runCli(executable, ['command', '--project-path', projectRoot, 'recompile_status', '--json'],
@@ -51,13 +99,16 @@ export async function waitUntilEditorIdle(projectRoot: string, executable = 'uni
 }
 
 export async function runRecompile(projectRoot: string, kinds: ReadonlySet<Change>, executable = 'unity', signal?: AbortSignal, runCli: ProcessRunner = runProcess,
-	beforeRecompile: () => void = () => {}): Promise<ProcessResult & { readonly recompileAttempts: number; readonly packagesResolved: boolean }> {
+	beforeRecompile: () => void = () => {}, log: (message: string) => void = () => {}): Promise<ProcessResult & { readonly recompileAttempts: number; readonly packagesResolved: boolean }> {
 	const options = { cwd: projectRoot, signal, timeout: 180_000 };
 	let stage: RecompileStage = 'package';
 	let recompileAttempts = 0;
 	let packagesResolved = false;
 	let result: ProcessResult | undefined;
 	try {
+		if (await isBlockedByDialog(projectRoot, executable, signal, runCli, log)) {
+			return { stdout: '', stderr: '', recompileAttempts, packagesResolved };
+		}
 		if (kinds.has('packages')) {
 			await runCli(executable, ['command', '--project-path', projectRoot, 'package_resolve'], options);
 			const deadline = Date.now() + 120_000;
@@ -86,6 +137,9 @@ export async function runRecompile(projectRoot: string, kinds: ReadonlySet<Chang
 		while (true) {
 			stage = 'preflight';
 			await waitUntilEditorIdle(projectRoot, executable, signal, runCli, false);
+			if (await isBlockedByDialog(projectRoot, executable, signal, runCli, log)) {
+				return { stdout: '', stderr: '', recompileAttempts, packagesResolved };
+			}
 			stage = 'invoke';
 			signal?.throwIfAborted();
 			beforeRecompile();

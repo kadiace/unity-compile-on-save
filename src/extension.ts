@@ -93,7 +93,7 @@ function classify(filePath: string, projectRoot: string): Change | undefined {
 }
 
 export function createRecompileHandler(
-	run: (projectRoot: string, kinds: ReadonlySet<Change>) => Promise<void>,
+	run: (projectRoot: string, kinds: ReadonlySet<Change>) => Promise<void | OperationResult>,
 	waitUntilEditorIdle: (projectRoot: string) => Promise<void> = async () => {},
 	reportFailure: (error: unknown) => void = (error) => {
 		console.error('Unity recompilation failed', error);
@@ -154,7 +154,7 @@ export function createRecompileHandler(
 		}
 		running.set(projectRoot, kinds);
 		let packagesResolved = false;
-		void run(projectRoot, kinds).then(() => { packagesResolved = kinds.has('packages'); }).catch((error: unknown) => {
+		void run(projectRoot, kinds).then((result) => { packagesResolved = result?.packagesResolved ?? kinds.has('packages'); }).catch((error: unknown) => {
 			packagesResolved = error instanceof OperationError && error.result.packagesResolved;
 			reportFailure(error);
 			if (error instanceof OperationError && error.result.status === 'deferred') {
@@ -369,7 +369,7 @@ export function activate(context: vscode.ExtensionContext): UnityTaskRunner {
 		return folder;
 	};
 	const handler = createRecompileHandler(
-		async (root, kinds) => { await runner.execute(folderFor(root), 'recompile', kinds); },
+		async (root, kinds) => runner.execute(folderFor(root), 'recompile', kinds),
 		(root) => runner.waitUntilIdle(folderFor(root)),
 		(error) => runner.reportFailure('Unity recompilation failed', error, false)
 	);

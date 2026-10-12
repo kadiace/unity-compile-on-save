@@ -19,6 +19,7 @@ suite('Unity background operations', () => {
 	let originalPath: string | undefined;
 	const pipeline = path.join(project, 'pipeline');
 	const command = path.join(project, 'command');
+	const status = path.join(project, 'status');
 	const marker = path.join(project, 'pipeline-task-count.txt');
 	const openScript = path.join(project, 'open');
 	const childPidFile = path.join(project, 'open-child.pid');
@@ -40,6 +41,7 @@ suite('Unity background operations', () => {
 		process.env.PATH = `${storage}${path.delimiter}${originalPath ?? ''}`;
 		writeFileSync(pipeline, script);
 		writeFileSync(command, 'console.log(JSON.stringify({data:{result:{status:"completed"}}}));');
+		writeFileSync(status, 'console.log(JSON.stringify({success:true,data:{count:1,instances:[{state:"ready"}]},errors:[]}));');
 		output = vscode.window.createOutputChannel('Unity task lifecycle test');
 		logs = '';
 		const append = output.append.bind(output);
@@ -57,7 +59,7 @@ suite('Unity background operations', () => {
 				if (!(error instanceof Error) || !('code' in error) || error.code !== 'ESRCH') { throw error; }
 			}
 		}
-		for (const file of [pipeline, command, marker, openScript, childPidFile, writeFlag, writeMarker, path.join(project, 'recompile')]) { rmSync(file, { force: true }); }
+		for (const file of [pipeline, command, status, marker, openScript, childPidFile, writeFlag, writeMarker, path.join(project, 'recompile')]) { rmSync(file, { force: true }); }
 		rmSync(storage, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	});
 
@@ -70,6 +72,31 @@ suite('Unity background operations', () => {
 		assert.deepEqual(vscode.window.terminals, terminals);
 		assert.equal(vscode.window.activeTextEditor, editor);
 	});
+
+	for (const scenario of ['ready', 'blocked', 'failed'] as const) {
+		test(`handles ${scenario} status before recompilation without disrupting background operation`, async () => {
+			// Given: a real subprocess status adapter and a recompile marker.
+			assert.ok(folder);
+			const called = path.join(storage, 'recompiled');
+			writeFileSync(path.join(project, 'recompile'), `require('node:fs').writeFileSync(${JSON.stringify(called)},'yes');`);
+			if (scenario === 'blocked') {
+				writeFileSync(status, 'console.log(JSON.stringify({success:false,data:{instances:[{state:"starting",blockedBy:{reason:"modal_dialog",dialogs:[{level:"modal",title:"QA Blocking Dialog"}]}}]},errors:[{code:"STATUS_BLOCKED_BY_DIALOG",message:"Editor blocked by dialog"}]}));process.exitCode=6;');
+			} else if (scenario === 'failed') {
+				writeFileSync(status, 'console.log("not JSON");process.exitCode=7;');
+			}
+			// When: the background operation runs through the VS Code runner.
+			const result = await runner.request(folder, 'recompile');
+			// Then: only a confirmed dialog suppresses recompilation and remains successful.
+			assert.equal(result.status, 'success');
+			assert.equal(existsSync(called), scenario !== 'blocked');
+			assert.equal(result.recompileAttempts, scenario === 'blocked' ? 0 : 1);
+			if (scenario === 'blocked') {
+				assert.match(logs, /STATUS_BLOCKED_BY_DIALOG/);
+				assert.match(logs, /QA Blocking Dialog/);
+				assert.equal(result.packagesResolved, false);
+			}
+		});
+	}
 
 	test('probes the same PATH CLI used for saves when automatic setup is disabled after explicit setup', async () => {
 		assert.ok(folder);

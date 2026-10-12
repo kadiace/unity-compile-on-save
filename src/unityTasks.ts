@@ -134,7 +134,7 @@ export class UnityTaskRunner implements vscode.Disposable {
 			await runCli(executable, ['open', projectRoot, '--non-interactive'], { ...options, finishOnExit: true });
 		}
 		log('Waiting for the Unity Editor to finish loading Pipeline and compiling scripts...');
-		await waitUntilEditorIdle(projectRoot, executable, signal, runCli);
+		await waitUntilEditorIdle(projectRoot, executable, signal, runCli, true, log);
 		log('Unity Pipeline connected. Compile on Save is ready.');
 		return { executable, result };
 	}
@@ -168,8 +168,8 @@ export class UnityTaskRunner implements vscode.Disposable {
 			if (operation === 'recompile') {
 				log(`Running unity recompile --project-path ${folder.uri.fsPath}`);
 				const result = await runRecompile(folder.uri.fsPath, kinds, state.ready, signal, this.processFor(folder.uri.fsPath),
-					() => this.diagnostics.clear(folder.uri.fsPath));
-				log('Unity recompilation completed.');
+					() => this.diagnostics.clear(folder.uri.fsPath), log);
+				if (result.recompileAttempts > 0) { log('Unity recompilation completed.'); }
 				return result;
 			}
 			return { ...setupResult, recompileAttempts: 0, packagesResolved: false };

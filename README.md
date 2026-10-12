@@ -43,7 +43,9 @@ Disabling **Recompile on Save** also prevents automatic setup, but does not by i
 
 1. Install **Unity Compile on Save** from the VS Code Marketplace.
 2. Open the **root folder** of your Unity project in VS Code and trust the workspace.
-3. The extension automatically connects **Unity Pipeline** in the background. It finds a supported Unity CLI or installs an extension-managed copy without administrator privileges. Fresh installations prefer Unity's latest stable release; before a stable release exists, the official installer selects the latest beta. The installed version must be **1.0.0-beta.11 or later**.
+3. The extension automatically connects **Unity Pipeline** in the background. It finds a supported Unity CLI or installs an extension-managed copy without administrator privileges. Fresh installations default to **1.0.0-beta.13**. Existing installations must be **1.0.0-beta.13 or later** to be reused.
+
+Before recompiling, the extension checks `unity status --format json` for the current project. A reported blocking modal dialog skips that request without an error notification; its reason and dialog titles are recorded in the **Unity CLI** Output channel. If the status query fails, the existing recompilation flow continues. A later change or manual Recompile request can try again after the dialog is closed.
 4. Setup runs `unity pipeline install --project-path <root>`, opens the project in its installed Unity Editor if it is not already running, and waits for the Pipeline connection. Save a C# file after setup; recompilation runs automatically after the quiet period.
 
 No `.vscode/tasks.json` or manual CLI installation is required. First-time setup needs no VS Code restart; updating an already active extension may require **Developer: Reload Window** as described below. Existing supported CLI installations are reused; older system installations are left untouched. Automatic setup requires internet access for downloads, a compatible installed and licensed **Unity 6+ Editor**, and any Unity sign-in required by your environment. It does not install the Unity Editor, accept licenses, or bypass authentication. Pipeline installation modifies the project's Unity package dependencies.
@@ -81,10 +83,10 @@ Set `unityCompileOnSave.autoSetup` to `false` if you manage the CLI and Pipeline
 
 The following commands are still useful when diagnosing an existing installation:
 
-1. Install **Unity CLI 1.0.0-beta.11 or later** using the [Unity CLI installation guide](https://docs.unity.com/en-us/unity-cli/use-unity-cli). If Unity CLI is already installed but older than beta.11, upgrade it to the minimum supported version:
+1. Install **Unity CLI 1.0.0-beta.13 or later** using the [Unity CLI installation guide](https://docs.unity.com/en-us/unity-cli/use-unity-cli). If Unity CLI is already installed but older than beta.13, upgrade it to the minimum supported version:
 
    ```powershell
-   unity upgrade --target 1.0.0-beta.11
+   unity upgrade --target 1.0.0-beta.13
    unity --version
    ```
 

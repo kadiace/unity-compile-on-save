@@ -6,6 +6,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+## [0.0.12]
+
+- Default extension-private Unity CLI installations to 1.0.0-beta.13 and require beta.13 or later when reusing a CLI.
+- Check project-scoped Editor status before recompiling, quietly skip reported modal blockers with their reason and titles in Output, and continue existing behavior when status lookup fails.
+
 ## [0.0.11]
 
 - Hold pending automatic recompilation during worktree-changing Git commands observed in shell-integrated VS Code terminals, then restart the full quiet period after the last command ends. This prevents compilation during a long fetch between checkout and pull.
