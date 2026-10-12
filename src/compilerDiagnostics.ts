@@ -1,9 +1,11 @@
 import path from 'node:path';
 import * as vscode from 'vscode';
 
+export const compilerDiagnosticSource = 'Unity CLI';
+
 export class CompilerDiagnostics implements vscode.Disposable {
 	private readonly projects = new Map<string, Map<string, vscode.Diagnostic[]>>();
-	readonly collection = vscode.languages.createDiagnosticCollection('Unity CLI');
+	readonly collection = vscode.languages.createDiagnosticCollection(compilerDiagnosticSource);
 
 	clear(projectRoot: string): void {
 		this.projects.delete(projectRoot);
@@ -66,7 +68,7 @@ export class CompilerDiagnostics implements vscode.Disposable {
 		const level = severity.toLowerCase() === 'error' ? vscode.DiagnosticSeverity.Error : vscode.DiagnosticSeverity.Warning;
 		if (diagnostics.some((item) => item.range.isEqual(range) && item.message === message && item.code === code && item.severity === level)) { return; }
 		const diagnostic = new vscode.Diagnostic(range, message, level);
-		diagnostic.source = 'Unity CLI';
+		diagnostic.source = compilerDiagnosticSource;
 		diagnostic.code = code;
 		diagnostics.push(diagnostic);
 		project.set(resolved, diagnostics);

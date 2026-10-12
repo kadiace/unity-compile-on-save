@@ -192,7 +192,7 @@ suite('Unity Compile on Save', () => {
 		}
 	});
 
-	test('runs Unity CLI from the project root after a C# save without a terminal', async () => {
+	test('defers a C# save with Problems and runs Unity CLI after errors clear without a terminal', async () => {
 		await config.update('recompileOnSave', false, vscode.ConfigurationTarget.Global);
 		const bin = path.join(root, 'bin');
 		mkdirSync(bin);
@@ -208,6 +208,7 @@ suite('Unity Compile on Save', () => {
 		process.env.PATH = `${bin}${path.delimiter}${originalPath}`;
 		await config.update('recompileOnSave', true, vscode.ConfigurationTarget.Global);
 		await config.update('quietPeriodSeconds', 1, vscode.ConfigurationTarget.Global);
+		const diagnostics = vscode.languages.createDiagnosticCollection('save-validation-language-server');
 		try {
 			const extension = vscode.extensions.getExtension('kadiace.unity-compile-on-save');
 			assert.ok(extension);
@@ -231,16 +232,18 @@ suite('Unity Compile on Save', () => {
 				}, 5000);
 			});
 			const document = await vscode.workspace.openTextDocument(vscode.Uri.file(csharp));
+			diagnostics.set(document.uri, [new vscode.Diagnostic(new vscode.Range(0, 0, 0, 1), 'C# syntax error', vscode.DiagnosticSeverity.Error)]);
 			const edit = new vscode.WorkspaceEdit();
 			edit.insert(document.uri, new vscode.Position(0, 0), '// actual VS Code save\n');
 			assert.equal(await vscode.workspace.applyEdit(edit), true);
 			assert.equal(await document.save(), true);
 			await new Promise<void>((resolve) => setTimeout(resolve, 250));
 			writeFileSync(path.join(scripts, 'Background.png'), 'unrelated asset');
-			await new Promise<void>((resolve) => setTimeout(resolve, 250));
+			await new Promise<void>((resolve) => setTimeout(resolve, 1200));
 			assert.equal(existsSync(path.join(project, 'status-probed.txt')), false);
 			assert.equal(existsSync(marker), false);
 			writeFileSync(path.join(project, 'editor-idle.flag'), 'ready');
+			diagnostics.clear();
 			await observed;
 			await completed;
 			assert.deepEqual(vscode.window.terminals, terminals);
@@ -252,6 +255,7 @@ suite('Unity Compile on Save', () => {
 			assert.deepEqual(result.args.map((value: unknown) =>
 				typeof value === 'string' ? value.toLowerCase() : value), ['--project-path', project.toLowerCase()]);
 		} finally {
+			diagnostics.dispose();
 			process.env.PATH = originalPath;
 		}
 	});

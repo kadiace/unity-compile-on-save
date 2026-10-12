@@ -6,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- Validate project-scoped C# Problems before automatic recompilation, allowing warnings and excluding previous Unity CLI compiler diagnostics.
+- Retain and merge changes while language-server errors block compilation, then resume on diagnostic changes without extra CLI polling or bypassing the quiet period.
+
 ## [0.0.10]
 
 - Serialize project recompilation requests and merge queued changes while preserving debounce and Pipeline setup ordering.

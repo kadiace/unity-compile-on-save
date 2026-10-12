@@ -6,6 +6,7 @@ import { OperationError, UnityTaskRunner } from './unityTasks';
 import type { OperationResult } from './unityTasks';
 import { processFailure } from './cliProcess';
 import { checkConnection, ConnectionStatusBar } from './connectionStatus';
+import { compilerDiagnosticSource } from './compilerDiagnostics';
 
 export type Change = 'source' | 'environment' | 'packages';
 type Pending = { uri: vscode.Uri; kinds: Set<Change>; timer?: NodeJS.Timeout };
@@ -107,6 +108,14 @@ export function createRecompileHandler(
 	const running = new Map<string, ReadonlySet<Change>>();
 	const waiting = new Map<string, Pending>();
 	const resolvedLocks = new Map<string, string>();
+	const diagnosticBelongsTo = (uri: vscode.Uri, projectRoot: string): boolean => {
+		if (uri.scheme !== 'file' || path.extname(uri.fsPath).toLowerCase() !== '.cs') { return false; }
+		const folder = vscode.workspace.getWorkspaceFolder(uri);
+		return folder !== undefined && path.relative(folder.uri.fsPath, projectRoot) === '';
+	};
+	const hasBlockingErrors = (projectRoot: string): boolean => vscode.languages.getDiagnostics().some(([uri, diagnostics]) =>
+		diagnosticBelongsTo(uri, projectRoot) && diagnostics.some((diagnostic) =>
+			diagnostic.severity === vscode.DiagnosticSeverity.Error && diagnostic.source !== compilerDiagnosticSource));
 	const lockFingerprint = (projectRoot: string): string | undefined => {
 		const lockFile = path.join(projectRoot, 'Packages', 'packages-lock.json');
 		return existsSync(lockFile) ? createHash('sha256').update(readFileSync(lockFile)).digest('hex') : undefined;
@@ -117,6 +126,8 @@ export function createRecompileHandler(
 		if (!item || running.has(projectRoot)) {
 			return;
 		}
+		// Diagnostics can change while the Editor readiness check is in flight.
+		if (hasBlockingErrors(projectRoot)) { return; }
 		pending.delete(projectRoot);
 		const config = vscode.workspace.getConfiguration('unityCompileOnSave', item.uri);
 		if (!enabled(config)) {
@@ -161,6 +172,15 @@ export function createRecompileHandler(
 		if (!item || item.timer || waiting.has(projectRoot) || running.has(projectRoot)) {
 			return;
 		}
+		const config = vscode.workspace.getConfiguration('unityCompileOnSave', item.uri);
+		if (!enabled(config) || ![...item.kinds].some((kind) => config.get<boolean>(
+			kind === 'source' ? 'recompileOnSourceChanges' : 'recompileOnProjectEnvironmentChanges', kind === 'source'
+		))) {
+			pending.delete(projectRoot);
+			return;
+		}
+		// Leave changes pending without polling Unity while C# Problems contain errors.
+		if (hasBlockingErrors(projectRoot)) { return; }
 		waiting.set(projectRoot, item);
 		void waitUntilEditorIdle(projectRoot).then(() => {
 			if (waiting.get(projectRoot) !== item) { return; }
@@ -235,6 +255,11 @@ export function createRecompileHandler(
 		pending.set(projectRoot, item);
 	};
 
+	const diagnosticChanges = vscode.languages.onDidChangeDiagnostics((event) => {
+		for (const projectRoot of pending.keys()) {
+			if (event.uris.some((uri) => diagnosticBelongsTo(uri, projectRoot))) { prepare(projectRoot); }
+		}
+	});
 	return {
 		onSave(document) {
 			schedule(document.uri);
@@ -247,6 +272,7 @@ export function createRecompileHandler(
 			waiting.delete(projectRoot);
 		},
 		dispose() {
+			diagnosticChanges.dispose();
 			for (const item of pending.values()) {
 				if (item.timer) {
 					clearTimeout(item.timer);
